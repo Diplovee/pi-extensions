@@ -25,6 +25,7 @@ const CONFIG_DIR = ".pi";
 const CONFIG_PATH = "extensions/auto-memory.json";
 const MEMORY_PATH = "MEMORY.md";
 const STATE_PATH = "auto-memory.json";
+const TERSE_CONFIG_PATH = "extensions/terse-mode.json";
 
 const MAX_PREFERENCES = 8;
 const MAX_PROJECT_FACTS = 10;
@@ -52,6 +53,10 @@ interface AutoMemoryState {
 }
 
 interface AutoMemoryConfig {
+	enabled?: boolean;
+}
+
+interface TerseConfig {
 	enabled?: boolean;
 }
 
@@ -123,6 +128,17 @@ function saveConfig(cwd: string, config: AutoMemoryConfig): void {
 	const { configFile, piDir } = getPaths(cwd);
 	ensureDir(join(piDir, "extensions"));
 	writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+}
+
+function isTerseEnabled(cwd: string): boolean {
+	const { piDir } = getPaths(cwd);
+	const configFile = join(piDir, TERSE_CONFIG_PATH);
+	if (!existsSync(configFile)) return false;
+	try {
+		return Boolean((JSON.parse(readFileSync(configFile, "utf-8")) as TerseConfig).enabled);
+	} catch {
+		return false;
+	}
 }
 
 function createEmptyState(enabled: boolean): AutoMemoryState {
@@ -325,10 +341,10 @@ function saveMemoryFile(cwd: string, state: AutoMemoryState): void {
 	writeFileSync(memoryFile, renderMemoryMarkdown(state), "utf-8");
 }
 
-function buildMemoryLines(state: AutoMemoryState, theme: Theme, contextPercent: number | null): string[] {
+function buildMemoryLines(state: AutoMemoryState, theme: Theme, contextPercent: number | null, terse: boolean): string[] {
 	const lines: string[] = [];
 	const statusColor = state.enabled ? "success" : "warning";
-	lines.push(`${theme.fg(statusColor, state.enabled ? "Memory: ON" : "Memory: OFF")}`);
+	lines.push(`${theme.fg(statusColor, state.enabled ? (terse ? "Mem: ON" : "Memory: ON") : terse ? "Mem: OFF" : "Memory: OFF")}`);
 
 	const stats = [
 		`${state.preferences.length} prefs`,
@@ -338,12 +354,12 @@ function buildMemoryLines(state: AutoMemoryState, theme: Theme, contextPercent: 
 	lines.push(theme.fg("muted", stats.join(" | ")));
 
 	if (state.currentFocus) {
-		lines.push(theme.fg("text", `Focus: ${trimSentence(state.currentFocus, 80)}`));
+		lines.push(theme.fg("text", `${terse ? "Focus" : "Focus:"} ${trimSentence(state.currentFocus, 80)}`));
 	}
 
 	if (contextPercent !== null) {
-		const slim = contextPercent >= HIGH_CONTEXT_PERCENT ? "slim mode" : "normal";
-		lines.push(theme.fg("dim", `Context: ${contextPercent}% | ${slim}`));
+		const slim = contextPercent >= HIGH_CONTEXT_PERCENT ? (terse ? "slim" : "slim mode") : "normal";
+		lines.push(theme.fg("dim", `${terse ? "Ctx" : "Context"}: ${contextPercent}% | ${slim}`));
 	}
 
 	return lines;
@@ -426,7 +442,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI) {
 	const refreshWidget = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI || !state) return;
 		const percent = ctx.getContextUsage()?.percent ?? null;
-		ctx.ui.setWidget("auto-memory", buildMemoryLines(state, ctx.ui.theme, percent), { placement: "belowEditor" });
+		ctx.ui.setWidget("auto-memory", buildMemoryLines(state, ctx.ui.theme, percent, isTerseEnabled(ctx.cwd)), { placement: "belowEditor" });
 		ctx.ui.setStatus("auto-memory", ctx.ui.theme.fg(state.enabled ? "success" : "warning", state.enabled ? "mem:on" : "mem:off"));
 	};
 
@@ -461,29 +477,29 @@ export default function autoMemoryExtension(pi: ExtensionAPI) {
 					state.enabled = true;
 					saveConfig(ctx.cwd, { enabled: true });
 					persist(ctx.cwd);
-					ctx.ui.notify("Auto memory enabled", "info");
+					ctx.ui.notify(isTerseEnabled(ctx.cwd) ? "Memory on" : "Auto memory enabled", "info");
 					break;
 				case "off":
 					state.enabled = false;
 					saveConfig(ctx.cwd, { enabled: false });
 					persist(ctx.cwd);
-					ctx.ui.notify("Auto memory disabled", "info");
+					ctx.ui.notify(isTerseEnabled(ctx.cwd) ? "Memory off" : "Auto memory disabled", "info");
 					break;
 				case "toggle":
 					state.enabled = !state.enabled;
 					saveConfig(ctx.cwd, { enabled: state.enabled });
 					persist(ctx.cwd);
-					ctx.ui.notify(`Auto memory ${state.enabled ? "enabled" : "disabled"}`, "info");
+					ctx.ui.notify(isTerseEnabled(ctx.cwd) ? `Memory ${state.enabled ? "on" : "off"}` : `Auto memory ${state.enabled ? "enabled" : "disabled"}`, "info");
 					break;
 				case "clear":
 					state = createEmptyState(state.enabled);
 					saveConfig(ctx.cwd, { enabled: state.enabled });
 					persist(ctx.cwd);
-					ctx.ui.notify("Auto memory cleared", "info");
+					ctx.ui.notify(isTerseEnabled(ctx.cwd) ? "Memory cleared" : "Auto memory cleared", "info");
 					break;
 				case "sync":
 					persist(ctx.cwd);
-					ctx.ui.notify("Auto memory synced", "info");
+					ctx.ui.notify(isTerseEnabled(ctx.cwd) ? "Memory synced" : "Auto memory synced", "info");
 					break;
 				case "show":
 				case "":

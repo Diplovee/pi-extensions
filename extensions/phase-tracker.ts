@@ -23,6 +23,7 @@ import { Type } from "@sinclair/typebox";
 const EXTENSION_ID = "phase-tracker";
 const CONFIG_DIR = ".pi";
 const STATE_PATH = "phase-tracker.json";
+const TERSE_CONFIG_PATH = "extensions/terse-mode.json";
 
 type PhaseStatus = "not_started" | "in_progress" | "awaiting_review" | "done";
 type TestStatus = "unknown" | "pass" | "fail";
@@ -62,6 +63,10 @@ interface TrackerToolResult {
 	ok: boolean;
 	message: string;
 	state: TrackerState;
+}
+
+interface TerseConfig {
+	enabled?: boolean;
 }
 
 const PhaseTrackerParams = Type.Object({
@@ -145,6 +150,16 @@ function saveState(cwd: string, state: TrackerState): void {
 	writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
 }
 
+function isTerseEnabled(cwd: string): boolean {
+	const configFile = join(cwd, CONFIG_DIR, TERSE_CONFIG_PATH);
+	if (!existsSync(configFile)) return false;
+	try {
+		return Boolean((JSON.parse(readFileSync(configFile, "utf-8")) as TerseConfig).enabled);
+	} catch {
+		return false;
+	}
+}
+
 function cloneState(state: TrackerState): TrackerState {
 	return JSON.parse(JSON.stringify(state)) as TrackerState;
 }
@@ -183,14 +198,14 @@ function renderStateText(state: TrackerState): string {
 	return lines.join("\n");
 }
 
-function widgetLines(state: TrackerState, theme: Theme): string[] {
+function widgetLines(state: TrackerState, theme: Theme, terse: boolean): string[] {
 	const lines: string[] = [];
 	const phase = getPhase(state);
-	lines.push(theme.fg("accent", "Phase Tracker"));
+	lines.push(theme.fg("accent", terse ? "Phases" : "Phase Tracker"));
 	if (!phase) {
-		lines.push(theme.fg("dim", "No active phase"));
+		lines.push(theme.fg("dim", terse ? "No phase" : "No active phase"));
 		if (state.phases.length > 0) {
-			lines.push(theme.fg("muted", `${state.phases.length} phase(s) ready`));
+			lines.push(theme.fg("muted", terse ? `${state.phases.length} ready` : `${state.phases.length} phase(s) ready`));
 		}
 		return lines;
 	}
@@ -198,10 +213,10 @@ function widgetLines(state: TrackerState, theme: Theme): string[] {
 	const done = phase.todos.filter((todo) => todo.done).length;
 	lines.push(theme.fg("text", `${phase.name}  (${done}/${phase.todos.length} todos)`));
 
-	let gate = "working";
-	if (phase.reviewStatus === "requested") gate = "waiting for your review";
+	let gate = terse ? "work" : "working";
+	if (phase.reviewStatus === "requested") gate = terse ? "review" : "waiting for your review";
 	if (phase.reviewStatus === "approved" && phase.status === "done") gate = "approved";
-	if (phase.reviewStatus === "changes_requested" || phase.testStatus === "fail") gate = "fix and retest";
+	if (phase.reviewStatus === "changes_requested" || phase.testStatus === "fail") gate = terse ? "fix+test" : "fix and retest";
 	lines.push(theme.fg("muted", `gate: ${gate}`));
 	lines.push(theme.fg("dim", `tests: ${phase.testStatus} | review: ${phase.reviewStatus} | errors: ${phase.errorCount}`));
 	return lines;
@@ -282,7 +297,7 @@ export default function phaseTracker(pi: ExtensionAPI) {
 
 	const refresh = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		ctx.ui.setWidget("phase-tracker", widgetLines(state, ctx.ui.theme), { placement: "belowEditor" });
+		ctx.ui.setWidget("phase-tracker", widgetLines(state, ctx.ui.theme, isTerseEnabled(ctx.cwd)), { placement: "belowEditor" });
 		const phase = getPhase(state);
 		ctx.ui.setStatus(
 			"phase-tracker",
@@ -497,7 +512,7 @@ export default function phaseTracker(pi: ExtensionAPI) {
 				state = createEmptyState();
 				persist(ctx.cwd);
 				refresh(ctx);
-				ctx.ui.notify("Phase tracker reset", "info");
+				ctx.ui.notify(isTerseEnabled(ctx.cwd) ? "Phases reset" : "Phase tracker reset", "info");
 				return;
 			}
 
@@ -514,7 +529,12 @@ export default function phaseTracker(pi: ExtensionAPI) {
 				}
 				persist(ctx.cwd);
 				refresh(ctx);
-				ctx.ui.notify(`Approved phase #${phase.id}. The agent can move on with phase_tracker next_phase.`, "info");
+				ctx.ui.notify(
+					isTerseEnabled(ctx.cwd)
+						? `Phase #${phase.id} approved.`
+						: `Approved phase #${phase.id}. The agent can move on with phase_tracker next_phase.`,
+					"info",
+				);
 				return;
 			}
 
@@ -527,7 +547,12 @@ export default function phaseTracker(pi: ExtensionAPI) {
 				setCurrentPhase(state, phase);
 				persist(ctx.cwd);
 				refresh(ctx);
-				ctx.ui.notify(`Rejected phase #${phase.id}. It stays open for fixes and retesting.`, "warning");
+				ctx.ui.notify(
+					isTerseEnabled(ctx.cwd)
+						? `Phase #${phase.id} rejected.`
+						: `Rejected phase #${phase.id}. It stays open for fixes and retesting.`,
+					"warning",
+				);
 				return;
 			}
 
