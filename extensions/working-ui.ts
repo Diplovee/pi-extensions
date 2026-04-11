@@ -12,6 +12,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Key, matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
 const CONFIG_DIR = ".pi";
 const CONFIG_PATH = "extensions/working-ui.json";
@@ -121,6 +122,12 @@ interface WorkingConfig {
 	mode?: WorkingMode;
 }
 
+type WorkingSelection =
+	| { kind: "mode"; mode: WorkingMode }
+	| { kind: "reset" }
+	| { kind: "custom" }
+	| null;
+
 function getConfigPath(cwd: string): string {
 	const dir = join(cwd, CONFIG_DIR, "extensions");
 	mkdirSync(dir, { recursive: true });
@@ -161,6 +168,195 @@ export default function workingUI(pi: ExtensionAPI) {
 			default:
 				return FUNNY_MESSAGES;
 		}
+	};
+
+	const previewMessage = (previewMode: WorkingMode, previewMessageOverride?: string): string => {
+		if (previewMessageOverride && previewMessageOverride !== DEFAULT_MESSAGE) {
+			return previewMessageOverride;
+		}
+		const pool =
+			previewMode === "clean"
+				? CLEAN_MESSAGES
+				: previewMode === "serious"
+					? SERIOUS_MESSAGES
+					: previewMode === "chaos"
+						? CHAOS_MESSAGES
+						: FUNNY_MESSAGES;
+		return pool[0] || DEFAULT_MESSAGE;
+	};
+
+	const showWorkingDialog = async (ctx: ExtensionContext): Promise<WorkingSelection> => {
+		const items = [
+			{ id: "funny", label: "Funny mode", hint: "1", kind: "mode" as const },
+			{ id: "clean", label: "Clean mode", hint: "2", kind: "mode" as const },
+			{ id: "serious", label: "Serious mode", hint: "3", kind: "mode" as const },
+			{ id: "chaos", label: "Chaos mode", hint: "4", kind: "mode" as const },
+			{ id: "custom", label: "Custom label...", hint: "C", kind: "custom" as const },
+			{ id: "reset", label: "Reset to random", hint: "R", kind: "reset" as const },
+		];
+
+		return await ctx.ui.custom<WorkingSelection>((tui, theme, _kb, done) => {
+			let index = 0;
+			let cached: string[] | undefined;
+
+			const refresh = () => {
+				cached = undefined;
+				tui.requestRender();
+			};
+
+			const current = () => items[index];
+
+			const resolvePreview = () => {
+				const item = current();
+				if (item.kind === "mode") {
+					return {
+						title: item.label,
+						message: previewMessage(item.id as WorkingMode, message),
+						frame: FRAME_SETS[(index + 1) % FRAME_SETS.length][1] || "...",
+					};
+				}
+				if (item.kind === "custom") {
+					return {
+						title: "Custom label",
+						message: message === DEFAULT_MESSAGE ? "Your own loading text" : message,
+						frame: FRAME_SETS[0][2] || "...",
+					};
+				}
+				return {
+					title: "Random funny mode",
+					message: previewMessage("funny"),
+					frame: FRAME_SETS[3][2] || "...",
+				};
+			};
+
+			const finishSelection = () => {
+				const item = current();
+				if (item.kind === "mode") {
+					done({ kind: "mode", mode: item.id as WorkingMode });
+					return;
+				}
+				if (item.kind === "custom") {
+					done({ kind: "custom" });
+					return;
+				}
+				done({ kind: "reset" });
+			};
+
+			return {
+				handleInput(data: string) {
+					if (matchesKey(data, Key.up)) {
+						index = (index - 1 + items.length) % items.length;
+						refresh();
+						return;
+					}
+					if (matchesKey(data, Key.down)) {
+						index = (index + 1) % items.length;
+						refresh();
+						return;
+					}
+					if (data === "1") {
+						index = 0;
+						finishSelection();
+						return;
+					}
+					if (data === "2") {
+						index = 1;
+						finishSelection();
+						return;
+					}
+					if (data === "3") {
+						index = 2;
+						finishSelection();
+						return;
+					}
+					if (data === "4") {
+						index = 3;
+						finishSelection();
+						return;
+					}
+					if (data.toLowerCase() === "c") {
+						index = 4;
+						finishSelection();
+						return;
+					}
+					if (data.toLowerCase() === "r") {
+						index = 5;
+						finishSelection();
+						return;
+					}
+					if (matchesKey(data, Key.enter)) {
+						finishSelection();
+						return;
+					}
+					if (matchesKey(data, Key.escape)) {
+						done(null);
+					}
+				},
+				invalidate() {
+					cached = undefined;
+				},
+				render(width: number): string[] {
+					if (cached) return cached;
+
+					const lines: string[] = [];
+					const inner = Math.max(40, width - 4);
+					const leftWidth = Math.max(18, Math.floor(inner * 0.42));
+					const rightWidth = Math.max(18, inner - leftWidth - 3);
+					const preview = resolvePreview();
+
+					const top = `┌${"─".repeat(inner)}┐`;
+					const mid = `├${"─".repeat(leftWidth)}┬${"─".repeat(rightWidth)}┤`;
+					const bot = `└${"─".repeat(inner)}┘`;
+					lines.push(theme.fg("accent", top));
+					lines.push(
+						theme.fg("accent", "│ ") +
+							truncateToWidth(theme.bold("Working UI"), inner - 2, "") +
+							" ".repeat(Math.max(0, inner - 2 - visibleWidth(theme.bold("Working UI")))) +
+							theme.fg("accent", " │"),
+					);
+					lines.push(theme.fg("accent", mid));
+
+					const rowCount = Math.max(items.length + 2, 8);
+					for (let row = 0; row < rowCount; row++) {
+						let left = "";
+						let right = "";
+						if (row < items.length) {
+							const item = items[row];
+							const selected = row === index;
+							const prefix = selected ? theme.fg("accent", "> ") : "  ";
+							left = `${prefix}${item.hint} ${item.label}`;
+						} else if (row === items.length) {
+							left = theme.fg("dim", "Enter apply");
+						} else if (row === items.length + 1) {
+							left = theme.fg("dim", "Esc cancel");
+						}
+
+						if (row === 0) right = theme.fg("accent", preview.title);
+						if (row === 2) right = `${preview.message}`;
+						if (row === 4) right = `${preview.message} ${preview.frame}`;
+						if (row === 6) right = theme.fg("dim", "1-4 modes, C custom, R reset");
+
+						const leftCell = truncateToWidth(left, leftWidth, "");
+						const rightCell = truncateToWidth(right, rightWidth, "");
+						const leftPad = " ".repeat(Math.max(0, leftWidth - visibleWidth(leftCell)));
+						const rightPad = " ".repeat(Math.max(0, rightWidth - visibleWidth(rightCell)));
+						lines.push(
+							theme.fg("accent", "│") +
+								leftCell +
+								leftPad +
+								theme.fg("accent", "│") +
+								rightCell +
+								rightPad +
+								theme.fg("accent", "│"),
+						);
+					}
+
+					lines.push(theme.fg("accent", bot));
+					cached = lines;
+					return lines;
+				},
+			};
+		}, { overlay: true, overlayOptions: { anchor: "center", width: 88, maxHeight: 16 } });
 	};
 
 	const apply = (ctx: ExtensionContext, text?: string) => {
@@ -218,7 +414,39 @@ export default function workingUI(pi: ExtensionAPI) {
 		},
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
-			if (!trimmed || trimmed === "show") {
+			if (!trimmed) {
+				const selected = await showWorkingDialog(ctx);
+				if (!selected) return;
+				if (selected.kind === "mode") {
+					mode = selected.mode;
+					saveConfig(ctx.cwd, { message: message === DEFAULT_MESSAGE ? undefined : message, mode });
+					ctx.ui.notify(`Working mode set to: ${mode}`, "info");
+					return;
+				}
+				if (selected.kind === "reset") {
+					message = DEFAULT_MESSAGE;
+					mode = "funny";
+					saveConfig(ctx.cwd, { mode });
+					activeMessage = message;
+					apply(ctx);
+					ctx.ui.notify(`Working label reset to: ${DEFAULT_MESSAGE}\nMode: ${mode}`, "info");
+					return;
+				}
+				if (selected.kind === "custom") {
+					const next = await ctx.ui.input("Working label", "Enter a custom loading label");
+					const value = next?.trim();
+					if (!value) return;
+					message = value;
+					saveConfig(ctx.cwd, { message, mode });
+					activeMessage = message;
+					apply(ctx);
+					ctx.ui.notify(`Working label set to: ${message}`, "info");
+					return;
+				}
+				return;
+			}
+
+			if (trimmed === "show") {
 				ctx.ui.notify(`Working label: ${message}\nMode: ${mode}`, "info");
 				return;
 			}
