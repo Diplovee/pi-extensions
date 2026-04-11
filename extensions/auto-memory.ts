@@ -26,6 +26,7 @@ const CONFIG_PATH = "extensions/auto-memory.json";
 const MEMORY_PATH = "MEMORY.md";
 const STATE_PATH = "auto-memory.json";
 const TERSE_CONFIG_PATH = "extensions/terse-mode.json";
+const DASHBOARD_CONFIG_PATH = "extensions/dashboard-ui.json";
 
 const MAX_PREFERENCES = 8;
 const MAX_PROJECT_FACTS = 10;
@@ -57,6 +58,10 @@ interface AutoMemoryConfig {
 }
 
 interface TerseConfig {
+	enabled?: boolean;
+}
+
+interface DashboardConfig {
 	enabled?: boolean;
 }
 
@@ -138,6 +143,17 @@ function isTerseEnabled(cwd: string): boolean {
 		return Boolean((JSON.parse(readFileSync(configFile, "utf-8")) as TerseConfig).enabled);
 	} catch {
 		return false;
+	}
+}
+
+function isDashboardEnabled(cwd: string): boolean {
+	const { piDir } = getPaths(cwd);
+	const configFile = join(piDir, DASHBOARD_CONFIG_PATH);
+	if (!existsSync(configFile)) return true;
+	try {
+		return (JSON.parse(readFileSync(configFile, "utf-8")) as DashboardConfig).enabled !== false;
+	} catch {
+		return true;
 	}
 }
 
@@ -442,7 +458,13 @@ export default function autoMemoryExtension(pi: ExtensionAPI) {
 	const refreshWidget = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI || !state) return;
 		const percent = ctx.getContextUsage()?.percent ?? null;
-		ctx.ui.setWidget("auto-memory", buildMemoryLines(state, ctx.ui.theme, percent, isTerseEnabled(ctx.cwd)), { placement: "belowEditor" });
+		if (isDashboardEnabled(ctx.cwd)) {
+			ctx.ui.setWidget("auto-memory", undefined);
+		} else {
+			ctx.ui.setWidget("auto-memory", buildMemoryLines(state, ctx.ui.theme, percent, isTerseEnabled(ctx.cwd)), {
+				placement: "belowEditor",
+			});
+		}
 		ctx.ui.setStatus("auto-memory", ctx.ui.theme.fg(state.enabled ? "success" : "warning", state.enabled ? "mem:on" : "mem:off"));
 	};
 

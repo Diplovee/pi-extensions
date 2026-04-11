@@ -24,6 +24,7 @@ const EXTENSION_ID = "phase-tracker";
 const CONFIG_DIR = ".pi";
 const STATE_PATH = "phase-tracker.json";
 const TERSE_CONFIG_PATH = "extensions/terse-mode.json";
+const DASHBOARD_CONFIG_PATH = "extensions/dashboard-ui.json";
 
 type PhaseStatus = "not_started" | "in_progress" | "awaiting_review" | "done";
 type TestStatus = "unknown" | "pass" | "fail";
@@ -66,6 +67,10 @@ interface TrackerToolResult {
 }
 
 interface TerseConfig {
+	enabled?: boolean;
+}
+
+interface DashboardConfig {
 	enabled?: boolean;
 }
 
@@ -157,6 +162,16 @@ function isTerseEnabled(cwd: string): boolean {
 		return Boolean((JSON.parse(readFileSync(configFile, "utf-8")) as TerseConfig).enabled);
 	} catch {
 		return false;
+	}
+}
+
+function isDashboardEnabled(cwd: string): boolean {
+	const configFile = join(cwd, CONFIG_DIR, DASHBOARD_CONFIG_PATH);
+	if (!existsSync(configFile)) return true;
+	try {
+		return (JSON.parse(readFileSync(configFile, "utf-8")) as DashboardConfig).enabled !== false;
+	} catch {
+		return true;
 	}
 }
 
@@ -297,7 +312,13 @@ export default function phaseTracker(pi: ExtensionAPI) {
 
 	const refresh = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		ctx.ui.setWidget("phase-tracker", widgetLines(state, ctx.ui.theme, isTerseEnabled(ctx.cwd)), { placement: "belowEditor" });
+		if (isDashboardEnabled(ctx.cwd)) {
+			ctx.ui.setWidget("phase-tracker", undefined);
+		} else {
+			ctx.ui.setWidget("phase-tracker", widgetLines(state, ctx.ui.theme, isTerseEnabled(ctx.cwd)), {
+				placement: "belowEditor",
+			});
+		}
 		const phase = getPhase(state);
 		ctx.ui.setStatus(
 			"phase-tracker",

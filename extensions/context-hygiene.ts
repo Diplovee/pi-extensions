@@ -26,6 +26,7 @@ const CONFIG_DIR = ".pi";
 const CONFIG_PATH = "extensions/context-hygiene.json";
 const STATE_PATH = "context-hygiene.json";
 const TERSE_CONFIG_PATH = "extensions/terse-mode.json";
+const DASHBOARD_CONFIG_PATH = "extensions/dashboard-ui.json";
 
 const WARN_PERCENT = 55;
 const COMPACT_PERCENT = 72;
@@ -48,6 +49,10 @@ interface HygieneState {
 }
 
 interface TerseConfig {
+	enabled?: boolean;
+}
+
+interface DashboardConfig {
 	enabled?: boolean;
 }
 
@@ -142,6 +147,17 @@ function isTerseEnabled(cwd: string): boolean {
 		return Boolean((JSON.parse(readFileSync(configFile, "utf-8")) as TerseConfig).enabled);
 	} catch {
 		return false;
+	}
+}
+
+function isDashboardEnabled(cwd: string): boolean {
+	const { piDir } = getPaths(cwd);
+	const configFile = join(piDir, DASHBOARD_CONFIG_PATH);
+	if (!existsSync(configFile)) return true;
+	try {
+		return (JSON.parse(readFileSync(configFile, "utf-8")) as DashboardConfig).enabled !== false;
+	} catch {
+		return true;
 	}
 }
 
@@ -242,15 +258,19 @@ export default function contextHygiene(pi: ExtensionAPI) {
 		const terse = isTerseEnabled(ctx.cwd);
 		const mode = state.enabled ? "on" : "off";
 		const percent = state.lastContextPercent === null ? "?" : `${state.lastContextPercent}%`;
-		ctx.ui.setWidget(
-			"context-hygiene",
-			[
-				ctx.ui.theme.fg(state.enabled ? "success" : "warning", terse ? `Hygiene: ${mode.toUpperCase()}` : `Context Hygiene: ${mode.toUpperCase()}`),
-				ctx.ui.theme.fg("muted", `${terse ? "ctx" : "context"}: ${percent} | noise: ${state.lastNoiseScore}`),
-				ctx.ui.theme.fg("dim", state.lastCompactReason ? `${terse ? "compact" : "last compact"}: ${state.lastCompactReason}` : terse ? "compact: none" : "last compact: none"),
-			],
-			{ placement: "belowEditor" },
-		);
+		if (isDashboardEnabled(ctx.cwd)) {
+			ctx.ui.setWidget("context-hygiene", undefined);
+		} else {
+			ctx.ui.setWidget(
+				"context-hygiene",
+				[
+					ctx.ui.theme.fg(state.enabled ? "success" : "warning", terse ? `Hygiene: ${mode.toUpperCase()}` : `Context Hygiene: ${mode.toUpperCase()}`),
+					ctx.ui.theme.fg("muted", `${terse ? "ctx" : "context"}: ${percent} | noise: ${state.lastNoiseScore}`),
+					ctx.ui.theme.fg("dim", state.lastCompactReason ? `${terse ? "compact" : "last compact"}: ${state.lastCompactReason}` : terse ? "compact: none" : "last compact: none"),
+				],
+				{ placement: "belowEditor" },
+			);
+		}
 		ctx.ui.setStatus(
 			"context-hygiene",
 			ctx.ui.theme.fg(state.enabled ? "success" : "warning", state.enabled ? "hygiene:on" : "hygiene:off"),
