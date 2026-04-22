@@ -252,24 +252,9 @@ export default function dashboardUI(pi: ExtensionAPI) {
 					const branch = footerData.getGitBranch();
 					if (branch) cwd += ` (${branch})`;
 
-					const statuses = footerData.getExtensionStatuses();
-					const leftStatuses = ["auto-memory", "context-hygiene", "terse-mode"]
-						.map((key) => statuses.get(key))
-						.filter(Boolean)
-						.join(" ");
-					const rightStatuses = ["phase-tracker", "dashboard-ui"]
-						.map((key) => statuses.get(key))
-						.filter(Boolean)
-						.join(" ");
-
 					const top = shortLine(theme.fg("dim", cwd), theme.fg("dim", ctx.model?.id || "no-model"), width);
-					const mid = shortLine(
-						theme.fg("dim", `↑${input} ↓${output} $${cost.toFixed(3)}`),
-						theme.fg("dim", rightStatuses),
-						width,
-					);
-					const bottom = shortLine(theme.fg("accent", leftStatuses), theme.fg("accent", rightStatuses), width);
-					return [top, mid, bottom];
+					const mid = truncateToWidth(theme.fg("dim", `↑${input} ↓${output} $${cost.toFixed(3)}`), width);
+					return [top, mid];
 				},
 			};
 		});
