@@ -18,6 +18,14 @@ const WEB_RATE_LIMIT_MS = 1000;
 
 let lastWebSearchAt = 0;
 
+type RepoSearchType = "text" | "filename";
+
+interface WebSearchItem {
+	title: string;
+	snippet: string;
+	url: string;
+}
+
 const WebSearchParams = Type.Object({
 	query: Type.String({ description: "Search query" }),
 	max_results: Type.Optional(Type.Number({ description: "Maximum number of results", default: 5 })),
@@ -108,6 +116,62 @@ function runSearchRepoFilename(query: string, pathFilter?: string): string {
 	return lines.join("\n");
 }
 
+async function performWebSearch(query: string, maxResults: number): Promise<{ ok: boolean; results: WebSearchItem[]; message?: string }> {
+	const elapsed = Date.now() - lastWebSearchAt;
+	if (elapsed < WEB_RATE_LIMIT_MS) await sleep(WEB_RATE_LIMIT_MS - elapsed);
+	lastWebSearchAt = Date.now();
+
+	try {
+		const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+		const res = await fetch(url, {
+			headers: {
+				"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+			},
+		});
+		const html = await res.text();
+
+		const titleMatches = [...html.matchAll(/<a[^>]+class="result__a"[^>]*>(.*?)<\/a>/gms)];
+		const snippetMatches = [...html.matchAll(/<a[^>]+class="result__snippet"[^>]*>(.*?)<\/a>/gms)];
+		const urlMatches = [...html.matchAll(/(?:uddg=)(https?[^&"']+)/g)];
+
+		const results = titleMatches.slice(0, maxResults).map((_, i) => ({
+			title: stripHtml(titleMatches[i]?.[1] ?? ""),
+			snippet: stripHtml(snippetMatches[i]?.[1] ?? ""),
+			url: decodeURIComponent(urlMatches[i]?.[1] ?? ""),
+		}));
+
+		return { ok: true, results };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, results: [], message };
+	}
+}
+
+function performRepoSearch(query: string, searchType: RepoSearchType, pathFilter?: string): { ok: boolean; output: string; count: number } {
+	const output = searchType === "filename" ? runSearchRepoFilename(query, pathFilter) : runSearchRepoText(query, pathFilter);
+	return {
+		ok: output !== "No results found.",
+		output,
+		count: output === "No results found." ? 0 : output.split("\n").filter(Boolean).length,
+	};
+}
+
+function isLikelyWebQuery(query: string): boolean {
+	const q = query.toLowerCase();
+	if (/\bhttps?:\/\//.test(q)) return true;
+	if (/\b(error|exception|stack trace|docs|documentation|how to|tutorial|guide|why|what is|latest|release notes?)\b/.test(q)) return true;
+	return false;
+}
+
+function compactLines(text: string, maxLines = 10): string {
+	return text
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.filter((line) => line.length > 0)
+		.slice(0, maxLines)
+		.join("\n");
+}
+
 export default function agentSearchTools(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "web_search",
@@ -124,41 +188,18 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 				};
 			}
 
-			const elapsed = Date.now() - lastWebSearchAt;
-			if (elapsed < WEB_RATE_LIMIT_MS) await sleep(WEB_RATE_LIMIT_MS - elapsed);
-			lastWebSearchAt = Date.now();
-
-			try {
-				const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-				const res = await fetch(url, {
-					headers: {
-						"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-					},
-				});
-				const html = await res.text();
-
-				const titleMatches = [...html.matchAll(/<a[^>]+class="result__a"[^>]*>(.*?)<\/a>/gms)];
-				const snippetMatches = [...html.matchAll(/<a[^>]+class="result__snippet"[^>]*>(.*?)<\/a>/gms)];
-				const urlMatches = [...html.matchAll(/(?:uddg=)(https?[^&"']+)/g)];
-
-				const results = titleMatches.slice(0, maxResults).map((_, i) => ({
-					title: stripHtml(titleMatches[i]?.[1] ?? ""),
-					snippet: stripHtml(snippetMatches[i]?.[1] ?? ""),
-					url: decodeURIComponent(urlMatches[i]?.[1] ?? ""),
-				}));
-
-				const text = JSON.stringify(results, null, 2);
-				return {
-					content: [{ type: "text", text }],
-					details: { ok: true, query, count: results.length, results },
-				};
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				return {
-					content: [{ type: "text", text: "[]" }],
-					details: { ok: false, message, query, results: [] },
-				};
-			}
+			const searched = await performWebSearch(query, maxResults);
+			const text = JSON.stringify(searched.results, null, 2);
+			return {
+				content: [{ type: "text", text }],
+				details: {
+					ok: searched.ok,
+					message: searched.message,
+					query,
+					count: searched.results.length,
+					results: searched.results,
+				},
+			};
 		},
 		renderCall(args, theme) {
 			return new Text(
@@ -185,7 +226,7 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 		parameters: SearchRepoParams,
 		async execute(_toolCallId, params) {
 			const query = params.query.trim();
-			const searchType = params.search_type ?? "text";
+			const searchType = (params.search_type ?? "text") as RepoSearchType;
 			const pathFilter = params.path_filter?.trim();
 
 			if (!query) {
@@ -195,19 +236,15 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 				};
 			}
 
-			const output =
-				searchType === "filename"
-					? runSearchRepoFilename(query, pathFilter)
-					: runSearchRepoText(query, pathFilter);
-
+			const result = performRepoSearch(query, searchType, pathFilter);
 			return {
-				content: [{ type: "text", text: output || "No results found." }],
+				content: [{ type: "text", text: result.output || "No results found." }],
 				details: {
-					ok: output !== "No results found.",
+					ok: result.ok,
 					query,
 					searchType,
 					pathFilter: pathFilter || undefined,
-					count: output === "No results found." ? 0 : output.split("\n").filter(Boolean).length,
+					count: result.count,
 				},
 			};
 		},
@@ -226,6 +263,74 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 			const details = result.details as { ok?: boolean; count?: number } | undefined;
 			if (details?.ok) return new Text(theme.fg("success", `✓ ${details.count ?? 0} match(es)`), 0, 0);
 			return new Text(theme.fg("warning", "! No results"), 0, 0);
+		},
+	});
+
+	pi.registerCommand("search", {
+		description: "Smart search helper. Usage: /search [web|text|file] <query>",
+		getArgumentCompletions: (prefix) => {
+			const options = ["web ", "text ", "file "];
+			const matches = options.filter((opt) => opt.startsWith(prefix));
+			return matches.length > 0 ? matches.map((value) => ({ value, label: value.trim() })) : null;
+		},
+		handler: async (args, ctx) => {
+			const raw = args.trim();
+			if (!raw) {
+				ctx.ui.notify("Usage: /search [web|text|file] <query>", "warning");
+				return;
+			}
+
+			const webMatch = raw.match(/^web\s+(.+)$/i);
+			const textMatch = raw.match(/^(text|repo)\s+(.+)$/i);
+			const fileMatch = raw.match(/^(file|filename)\s+(.+)$/i);
+
+			if (webMatch) {
+				const query = webMatch[1].trim();
+				const searched = await performWebSearch(query, 5);
+				if (!searched.ok) {
+					ctx.ui.notify(`Web search failed: ${searched.message ?? "unknown error"}`, "error");
+					return;
+				}
+				if (searched.results.length === 0) {
+					ctx.ui.notify("Web search: no results", "warning");
+					return;
+				}
+				const preview = searched.results
+					.slice(0, 5)
+					.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}`)
+					.join("\n");
+				ctx.ui.notify(compactLines(`Web results for: ${query}\n${preview}`, 12), "info");
+				return;
+			}
+
+			if (textMatch || fileMatch) {
+				const query = (textMatch?.[2] ?? fileMatch?.[2] ?? "").trim();
+				const type: RepoSearchType = fileMatch ? "filename" : "text";
+				const result = performRepoSearch(query, type);
+				ctx.ui.notify(compactLines(result.output, 14), result.ok ? "info" : "warning");
+				return;
+			}
+
+			if (isLikelyWebQuery(raw)) {
+				const searched = await performWebSearch(raw, 5);
+				if (!searched.ok) {
+					ctx.ui.notify(`Web search failed: ${searched.message ?? "unknown error"}`, "error");
+					return;
+				}
+				if (searched.results.length === 0) {
+					ctx.ui.notify("No web results found.", "warning");
+					return;
+				}
+				const preview = searched.results
+					.slice(0, 5)
+					.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}`)
+					.join("\n");
+				ctx.ui.notify(compactLines(`Web results for: ${raw}\n${preview}`, 12), "info");
+				return;
+			}
+
+			const repoResult = performRepoSearch(raw, "text");
+			ctx.ui.notify(compactLines(repoResult.output, 14), repoResult.ok ? "info" : "warning");
 		},
 	});
 }
