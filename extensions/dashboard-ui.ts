@@ -59,6 +59,40 @@ function shortLine(left: string, right: string, width: number): string {
 	return truncateToWidth(left + " ".repeat(available) + right, width);
 }
 
+function renderContextBar(
+	theme: { fg: (color: string, text: string) => string },
+	contextPercent: number | null | undefined,
+	barWidth: number,
+): string {
+	if (contextPercent === null || contextPercent === undefined) {
+		return `${theme.fg("borderMuted", "[")}${theme.fg("dim", "?".repeat(barWidth))}${theme.fg("borderMuted", "]")} ${theme.fg("dim", "?%")}`;
+	}
+
+	const clamped = Math.max(0, Math.min(100, contextPercent));
+	const filled = Math.round((clamped / 100) * barWidth);
+	const color = clamped >= 72 ? "error" : clamped >= 55 ? "warning" : "success";
+	const fill = filled > 0 ? theme.fg(color, "█".repeat(filled)) : "";
+	const empty = filled < barWidth ? theme.fg("muted", "░".repeat(barWidth - filled)) : "";
+	return `${theme.fg("borderMuted", "[")}${fill}${empty}${theme.fg("borderMuted", "]")} ${theme.fg("muted", `${Math.round(clamped)}%`)}`;
+}
+
+function normalizeLabel(value: string | undefined, fallback: string): string {
+	if (!value) return fallback;
+	return value.replace(/_/g, " ").trim() || fallback;
+}
+
+function kv(theme: { fg: (color: string, text: string) => string }, label: string, value: string, labelWidth = 8): string {
+	return `${theme.fg("dim", `${label}:`.padEnd(labelWidth + 1, " "))}${value}`;
+}
+
+function statusColor(value: string | undefined): string {
+	const normalized = (value ?? "").toLowerCase();
+	if (normalized.includes("pass") || normalized.includes("done") || normalized.includes("approved")) return "success";
+	if (normalized.includes("fail") || normalized.includes("reject") || normalized.includes("error")) return "error";
+	if (normalized.includes("review") || normalized.includes("await") || normalized.includes("pending")) return "warning";
+	return "muted";
+}
+
 export default function dashboardUI(pi: ExtensionAPI) {
 	let enabled = true;
 
@@ -109,31 +143,50 @@ export default function dashboardUI(pi: ExtensionAPI) {
 					const totalTodos = currentPhase?.todos?.length ?? 0;
 
 					const inner = Math.max(20, width - 4);
-					const leftWidth = Math.max(10, Math.floor(inner * 0.52));
-					const rightWidth = Math.max(10, inner - leftWidth - 3);
+					const twoColumn = inner >= 86;
+					const leftWidth = twoColumn ? Math.max(12, Math.floor(inner * 0.52)) : inner;
+					const rightWidth = twoColumn ? Math.max(12, inner - leftWidth - 3) : inner;
+					const hygieneBarWidth = Math.max(8, Math.min(16, leftWidth - 15));
+
+					const memoryOn = memory?.enabled !== false;
+					const memoryCounts = `${memory?.preferences?.length ?? 0}p ${memory?.projectFacts?.length ?? 0}f ${memory?.recentDecisions?.length ?? 0}d`;
+					const focusText = memory?.currentFocus
+						? truncateToWidth(memory.currentFocus, Math.max(10, leftWidth - 10), "...")
+						: theme.fg("muted", "none");
+
+					const hygieneOn = hygiene?.enabled !== false;
+					const noiseText = String(hygiene?.lastNoiseScore ?? 0);
+					const compactText = hygiene?.lastCompactReason
+						? truncateToWidth(hygiene.lastCompactReason, Math.max(10, leftWidth - 10), "...")
+						: theme.fg("muted", "none");
+
+					const phaseName = currentPhase ? truncateToWidth(currentPhase.name, Math.max(10, rightWidth - 10), "...") : theme.fg("muted", "none");
+					const phaseState = normalizeLabel(currentPhase?.status, "none");
+					const testsState = normalizeLabel(currentPhase?.testStatus, "?");
+					const reviewState = normalizeLabel(currentPhase?.reviewStatus, "?");
 
 					const left: string[] = [
-						theme.fg("accent", "Memory"),
-						`${memory?.enabled === false ? "off" : "on"} | ${memory?.preferences?.length ?? 0} prefs | ${memory?.projectFacts?.length ?? 0} facts | ${memory?.recentDecisions?.length ?? 0} decisions`,
-						memory?.currentFocus ? `focus: ${memory.currentFocus}` : "focus: none",
+						theme.fg("accent", "MEMORY"),
+						kv(theme, "status", memoryOn ? theme.fg("success", "on") : theme.fg("warning", "off")),
+						kv(theme, "store", theme.fg("muted", memoryCounts)),
+						kv(theme, "focus", focusText),
 						"",
-						theme.fg("accent", "Hygiene"),
-						`${hygiene?.enabled === false ? "off" : "on"} | ctx ${hygiene?.lastContextPercent ?? "?"}% | noise ${hygiene?.lastNoiseScore ?? 0}`,
-						hygiene?.lastCompactReason ? `compact: ${hygiene.lastCompactReason}` : "compact: none",
+						theme.fg("accent", "HYGIENE"),
+						kv(theme, "status", hygieneOn ? theme.fg("success", "on") : theme.fg("warning", "off")),
+						kv(theme, "noise", theme.fg(statusColor(noiseText), noiseText)),
+						kv(theme, "ctx", renderContextBar(theme, hygiene?.lastContextPercent, hygieneBarWidth)),
+						kv(theme, "compact", compactText),
 					];
 
 					const right: string[] = [
-						theme.fg("accent", "Phase"),
-						currentPhase ? `${currentPhase.name}` : "none",
-						currentPhase
-							? `${doneTodos}/${totalTodos} todos | ${currentPhase.status}`
-							: "0/0 todos | none",
-						currentPhase
-							? `tests ${currentPhase.testStatus} | review ${currentPhase.reviewStatus}`
-							: "tests ? | review ?",
+						theme.fg("accent", "PHASE"),
+						kv(theme, "name", phaseName),
+						kv(theme, "todos", `${doneTodos}/${totalTodos}`),
+						kv(theme, "state", theme.fg(statusColor(phaseState), phaseState)),
+						kv(theme, "tests", theme.fg(statusColor(testsState), testsState)),
+						kv(theme, "review", theme.fg(statusColor(reviewState), reviewState)),
 					];
 
-					const rows = Math.max(left.length, right.length);
 					const lines: string[] = [];
 					lines.push(theme.fg("borderMuted", `┌${"─".repeat(inner)}┐`));
 					lines.push(
@@ -143,20 +196,30 @@ export default function dashboardUI(pi: ExtensionAPI) {
 					);
 					lines.push(theme.fg("borderMuted", `├${"─".repeat(inner)}┤`));
 
-					for (let i = 0; i < rows; i++) {
-						const leftCell = truncateToWidth(left[i] ?? "", leftWidth, "");
-						const rightCell = truncateToWidth(right[i] ?? "", rightWidth, "");
-						const leftPad = " ".repeat(Math.max(0, leftWidth - visibleWidth(leftCell)));
-						const rightPad = " ".repeat(Math.max(0, rightWidth - visibleWidth(rightCell)));
-						lines.push(
-							theme.fg("borderMuted", "│ ") +
-								leftCell +
-								leftPad +
-								theme.fg("borderMuted", " │ ") +
-								rightCell +
-								rightPad +
-								theme.fg("borderMuted", " │"),
-						);
+					if (!twoColumn) {
+						const single = [...left, "", theme.fg("borderMuted", "-".repeat(Math.max(8, inner - 2))), "", ...right];
+						for (const row of single) {
+							const cell = truncateToWidth(row, inner, "");
+							const pad = " ".repeat(Math.max(0, inner - visibleWidth(cell)));
+							lines.push(theme.fg("borderMuted", "│ ") + cell + pad + theme.fg("borderMuted", " │"));
+						}
+					} else {
+						const rows = Math.max(left.length, right.length);
+						for (let i = 0; i < rows; i++) {
+							const leftCell = truncateToWidth(left[i] ?? "", leftWidth, "");
+							const rightCell = truncateToWidth(right[i] ?? "", rightWidth, "");
+							const leftPad = " ".repeat(Math.max(0, leftWidth - visibleWidth(leftCell)));
+							const rightPad = " ".repeat(Math.max(0, rightWidth - visibleWidth(rightCell)));
+							lines.push(
+								theme.fg("borderMuted", "│ ") +
+									leftCell +
+									leftPad +
+									theme.fg("borderMuted", " │ ") +
+									rightCell +
+									rightPad +
+									theme.fg("borderMuted", " │"),
+							);
+						}
 					}
 
 					lines.push(theme.fg("borderMuted", `└${"─".repeat(inner)}┘`));

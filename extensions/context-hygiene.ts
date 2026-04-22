@@ -16,6 +16,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { StringEnum } from "@mariozechner/pi-ai";
 import type { TextContent } from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
@@ -68,7 +69,7 @@ interface HygieneToolResult {
 }
 
 const ContextHygieneParams = Type.Object({
-	action: Type.Union([Type.Literal("status"), Type.Literal("compact")]),
+	action: StringEnum(["status", "compact"] as const),
 	reason: Type.Optional(Type.String({ description: "Optional reason for manual compaction" })),
 });
 
@@ -235,6 +236,24 @@ function shouldCompact(state: HygieneState, turnIndex: number, contextPercent: n
 	return { compact: false, reason: "" };
 }
 
+function renderContextBar(
+	theme: { fg: (color: string, text: string) => string },
+	contextPercent: number | null,
+	barWidth: number,
+): string {
+	if (contextPercent === null) {
+		return `${theme.fg("borderMuted", "[")}${theme.fg("dim", "?".repeat(barWidth))}${theme.fg("borderMuted", "]")} ${theme.fg("dim", "?%")}`;
+	}
+
+	const clamped = Math.max(0, Math.min(100, contextPercent));
+	const filled = Math.round((clamped / 100) * barWidth);
+	const severityColor = clamped >= COMPACT_PERCENT ? "error" : clamped >= WARN_PERCENT ? "warning" : "success";
+	const fill = filled > 0 ? theme.fg(severityColor, "█".repeat(filled)) : "";
+	const empty = filled < barWidth ? theme.fg("muted", "░".repeat(barWidth - filled)) : "";
+	const pct = `${Math.round(clamped)}%`;
+	return `${theme.fg("borderMuted", "[")}${fill}${empty}${theme.fg("borderMuted", "]")} ${theme.fg("muted", pct)}`;
+}
+
 export default function contextHygiene(pi: ExtensionAPI) {
 	let state: HygieneState = createState(true);
 
@@ -257,7 +276,7 @@ export default function contextHygiene(pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		const terse = isTerseEnabled(ctx.cwd);
 		const mode = state.enabled ? "on" : "off";
-		const percent = state.lastContextPercent === null ? "?" : `${state.lastContextPercent}%`;
+		const bar = renderContextBar(ctx.ui.theme, state.lastContextPercent, terse ? 10 : 16);
 		if (isDashboardEnabled(ctx.cwd)) {
 			ctx.ui.setWidget("context-hygiene", undefined);
 		} else {
@@ -265,7 +284,7 @@ export default function contextHygiene(pi: ExtensionAPI) {
 				"context-hygiene",
 				[
 					ctx.ui.theme.fg(state.enabled ? "success" : "warning", terse ? `Hygiene: ${mode.toUpperCase()}` : `Context Hygiene: ${mode.toUpperCase()}`),
-					ctx.ui.theme.fg("muted", `${terse ? "ctx" : "context"}: ${percent} | noise: ${state.lastNoiseScore}`),
+					`${ctx.ui.theme.fg("muted", `${terse ? "ctx" : "context"}:`)} ${bar} ${ctx.ui.theme.fg("muted", `| noise: ${state.lastNoiseScore}`)}`,
 					ctx.ui.theme.fg("dim", state.lastCompactReason ? `${terse ? "compact" : "last compact"}: ${state.lastCompactReason}` : terse ? "compact: none" : "last compact: none"),
 				],
 				{ placement: "belowEditor" },
