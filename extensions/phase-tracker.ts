@@ -17,6 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
+import { StringEnum } from "@mariozechner/pi-ai";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 
@@ -75,18 +76,18 @@ interface DashboardConfig {
 }
 
 const PhaseTrackerParams = Type.Object({
-	action: Type.Union([
-		Type.Literal("create_plan"),
-		Type.Literal("add_phase"),
-		Type.Literal("add_todo"),
-		Type.Literal("start_phase"),
-		Type.Literal("complete_todo"),
-		Type.Literal("log_test"),
-		Type.Literal("request_review"),
-		Type.Literal("log_error"),
-		Type.Literal("next_phase"),
-		Type.Literal("list"),
-	]),
+	action: StringEnum([
+		"create_plan",
+		"add_phase",
+		"add_todo",
+		"start_phase",
+		"complete_todo",
+		"log_test",
+		"request_review",
+		"log_error",
+		"next_phase",
+		"list",
+	] as const),
 	title: Type.Optional(Type.String({ description: "Plan title for create_plan" })),
 	phaseName: Type.Optional(Type.String({ description: "Name of the phase" })),
 	goal: Type.Optional(Type.String({ description: "Goal of the phase" })),
@@ -94,7 +95,7 @@ const PhaseTrackerParams = Type.Object({
 	todoText: Type.Optional(Type.String({ description: "Todo text" })),
 	todoId: Type.Optional(Type.Number({ description: "Todo ID to complete" })),
 	testOutcome: Type.Optional(
-		Type.Union([Type.Literal("pass"), Type.Literal("fail")], { description: "Whether tests passed or failed" }),
+		StringEnum(["pass", "fail"] as const, { description: "Whether tests passed or failed" }),
 	),
 	notes: Type.Optional(Type.String({ description: "Test/review/error notes" })),
 	error: Type.Optional(Type.String({ description: "Error description when logging a regression" })),
