@@ -11,7 +11,10 @@ Reusable PI extensions for token-efficient memory, phased execution, and review-
   Tracks implementation phases, todos, testing, regressions, and explicit user review before advancing.
 
 - `extensions/agent-search-tools.ts`
-  Adds lightweight `web_search` (DuckDuckGo HTML) and `search_repo` (ripgrep/find) tools to reduce context-heavy exploration.
+  Adds lightweight `web_search` (DuckDuckGo HTML) and `search_repo` (ripgrep/find) tools plus `/search` command to reduce context-heavy exploration.
+
+- `extensions/plan-gate.ts`
+  Adds `/plan` command and `plan_gate` tool to keep sessions in planning mode until you explicitly approve coding (`/plan go`).
 
 ## Install
 
