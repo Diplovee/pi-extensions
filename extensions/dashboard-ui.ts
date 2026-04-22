@@ -19,6 +19,7 @@ import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 
 const CONFIG_DIR = ".pi";
 const CONFIG_PATH = "extensions/dashboard-ui.json";
+const SESSION_DIR = "sessions";
 
 interface DashboardConfig {
 	enabled: boolean;
@@ -57,6 +58,17 @@ function readJson<T>(path: string): T | null {
 function shortLine(left: string, right: string, width: number): string {
 	const available = Math.max(1, width - visibleWidth(left) - visibleWidth(right));
 	return truncateToWidth(left + " ".repeat(available) + right, width);
+}
+
+function getSessionScope(): string {
+	const raw = process.env.PI_SESSION_ID || process.env.PI_SESSION_SCOPE || `pid-${process.pid}`;
+	return raw.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 80) || `pid-${process.pid}`;
+}
+
+function readSessionJson<T>(cwd: string, filename: string): T | null {
+	const piDir = join(cwd, CONFIG_DIR);
+	const sessionFile = join(piDir, SESSION_DIR, getSessionScope(), filename);
+	return readJson<T>(sessionFile) ?? readJson<T>(join(piDir, filename));
 }
 
 function renderContextBar(
@@ -112,19 +124,19 @@ export default function dashboardUI(pi: ExtensionAPI) {
 			return {
 				invalidate() {},
 				render(width: number): string[] {
-					const memory = readJson<{
+					const memory = readSessionJson<{
 						enabled?: boolean;
 						preferences?: unknown[];
 						projectFacts?: unknown[];
 						recentDecisions?: unknown[];
 						currentFocus?: string;
-					}>(join(ctx.cwd, ".pi", "auto-memory.json"));
-					const hygiene = readJson<{
+					}>(ctx.cwd, "auto-memory.json");
+					const hygiene = readSessionJson<{
 						enabled?: boolean;
 						lastContextPercent?: number | null;
 						lastNoiseScore?: number;
 						lastCompactReason?: string;
-					}>(join(ctx.cwd, ".pi", "context-hygiene.json"));
+					}>(ctx.cwd, "context-hygiene.json");
 					const phase = readJson<{
 						currentPhaseId?: number;
 						phases?: Array<{

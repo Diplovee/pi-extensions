@@ -26,6 +26,7 @@ const EXTENSION_ID = "context-hygiene";
 const CONFIG_DIR = ".pi";
 const CONFIG_PATH = "extensions/context-hygiene.json";
 const STATE_PATH = "context-hygiene.json";
+const SESSION_DIR = "sessions";
 const TERSE_CONFIG_PATH = "extensions/terse-mode.json";
 const DASHBOARD_CONFIG_PATH = "extensions/dashboard-ui.json";
 
@@ -77,12 +78,21 @@ function ensureDir(path: string): void {
 	mkdirSync(path, { recursive: true });
 }
 
+function getSessionScope(): string {
+	const raw = process.env.PI_SESSION_ID || process.env.PI_SESSION_SCOPE || `pid-${process.pid}`;
+	return raw.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 80) || `pid-${process.pid}`;
+}
+
 function getPaths(cwd: string) {
 	const piDir = join(cwd, CONFIG_DIR);
+	const scope = getSessionScope();
+	const sessionDir = join(piDir, SESSION_DIR, scope);
 	return {
 		piDir,
+		sessionDir,
 		configFile: join(piDir, CONFIG_PATH),
-		stateFile: join(piDir, STATE_PATH),
+		stateFile: join(sessionDir, STATE_PATH),
+		legacyStateFile: join(piDir, STATE_PATH),
 	};
 }
 
@@ -114,11 +124,12 @@ function createState(enabled: boolean): HygieneState {
 
 function loadState(cwd: string): HygieneState {
 	const config = loadConfig(cwd);
-	const { stateFile, piDir } = getPaths(cwd);
-	ensureDir(piDir);
-	if (!existsSync(stateFile)) return createState(config.enabled ?? true);
+	const { stateFile, legacyStateFile, sessionDir } = getPaths(cwd);
+	ensureDir(sessionDir);
+	const sourceFile = existsSync(stateFile) ? stateFile : legacyStateFile;
+	if (!existsSync(sourceFile)) return createState(config.enabled ?? true);
 	try {
-		const parsed = JSON.parse(readFileSync(stateFile, "utf-8")) as Partial<HygieneState>;
+		const parsed = JSON.parse(readFileSync(sourceFile, "utf-8")) as Partial<HygieneState>;
 		return {
 			version: 1,
 			enabled: parsed.enabled ?? config.enabled ?? true,
@@ -135,8 +146,8 @@ function loadState(cwd: string): HygieneState {
 }
 
 function saveState(cwd: string, state: HygieneState): void {
-	const { stateFile, piDir } = getPaths(cwd);
-	ensureDir(piDir);
+	const { stateFile, sessionDir } = getPaths(cwd);
+	ensureDir(sessionDir);
 	writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
 }
 

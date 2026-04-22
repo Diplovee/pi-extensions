@@ -25,6 +25,7 @@ const CONFIG_DIR = ".pi";
 const CONFIG_PATH = "extensions/auto-memory.json";
 const MEMORY_PATH = "MEMORY.md";
 const STATE_PATH = "auto-memory.json";
+const SESSION_DIR = "sessions";
 const TERSE_CONFIG_PATH = "extensions/terse-mode.json";
 const DASHBOARD_CONFIG_PATH = "extensions/dashboard-ui.json";
 
@@ -108,13 +109,22 @@ function getTextFromMessage(message: AgentMessage): string {
 	return "";
 }
 
+function getSessionScope(): string {
+	const raw = process.env.PI_SESSION_ID || process.env.PI_SESSION_SCOPE || `pid-${process.pid}`;
+	return raw.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(0, 80) || `pid-${process.pid}`;
+}
+
 function getPaths(cwd: string) {
 	const piDir = join(cwd, CONFIG_DIR);
+	const scope = getSessionScope();
+	const sessionDir = join(piDir, SESSION_DIR, scope);
 	return {
 		piDir,
+		sessionDir,
 		configFile: join(piDir, CONFIG_PATH),
-		stateFile: join(piDir, STATE_PATH),
-		memoryFile: join(piDir, MEMORY_PATH),
+		stateFile: join(sessionDir, STATE_PATH),
+		legacyStateFile: join(piDir, STATE_PATH),
+		memoryFile: join(sessionDir, MEMORY_PATH),
 	};
 }
 
@@ -169,13 +179,14 @@ function createEmptyState(enabled: boolean): AutoMemoryState {
 
 function loadState(cwd: string): AutoMemoryState {
 	const config = loadConfig(cwd);
-	const { stateFile, piDir } = getPaths(cwd);
-	ensureDir(piDir);
-	if (!existsSync(stateFile)) {
+	const { stateFile, legacyStateFile, sessionDir } = getPaths(cwd);
+	ensureDir(sessionDir);
+	const sourceFile = existsSync(stateFile) ? stateFile : legacyStateFile;
+	if (!existsSync(sourceFile)) {
 		return createEmptyState(config.enabled ?? true);
 	}
 	try {
-		const parsed = JSON.parse(readFileSync(stateFile, "utf-8")) as Partial<AutoMemoryState>;
+		const parsed = JSON.parse(readFileSync(sourceFile, "utf-8")) as Partial<AutoMemoryState>;
 		return {
 			version: 1,
 			enabled: parsed.enabled ?? config.enabled ?? true,
@@ -192,8 +203,8 @@ function loadState(cwd: string): AutoMemoryState {
 }
 
 function saveState(cwd: string, state: AutoMemoryState): void {
-	const { stateFile, piDir } = getPaths(cwd);
-	ensureDir(piDir);
+	const { stateFile, sessionDir } = getPaths(cwd);
+	ensureDir(sessionDir);
 	writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`, "utf-8");
 }
 
@@ -352,8 +363,8 @@ function renderMemoryMarkdown(state: AutoMemoryState): string {
 }
 
 function saveMemoryFile(cwd: string, state: AutoMemoryState): void {
-	const { memoryFile, piDir } = getPaths(cwd);
-	ensureDir(piDir);
+	const { memoryFile, sessionDir } = getPaths(cwd);
+	ensureDir(sessionDir);
 	writeFileSync(memoryFile, renderMemoryMarkdown(state), "utf-8");
 }
 

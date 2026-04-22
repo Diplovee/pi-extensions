@@ -10,6 +10,9 @@ Reusable PI extensions for token-efficient memory, phased execution, and review-
 - `extensions/phase-tracker.ts`
   Tracks implementation phases, todos, testing, regressions, and explicit user review before advancing.
 
+- `extensions/agent-search-tools.ts`
+  Adds lightweight `web_search` (DuckDuckGo HTML) and `search_repo` (ripgrep/find) tools to reduce context-heavy exploration.
+
 ## Install
 
 Run:
