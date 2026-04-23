@@ -148,6 +148,11 @@ export default function dashboardUI(pi: ExtensionAPI) {
 							reviewStatus: string;
 						}>;
 					}>(join(ctx.cwd, ".pi", "phase-tracker.json"));
+					const cosplay = readSessionJson<{
+						active?: boolean;
+						name?: string;
+						source?: "preset" | "custom";
+					}>(ctx.cwd, "cosplay-state.json");
 
 					const currentPhase =
 						phase?.phases?.find((item) => item.id === phase.currentPhaseId) ?? phase?.phases?.[0];
@@ -176,6 +181,12 @@ export default function dashboardUI(pi: ExtensionAPI) {
 					const phaseState = normalizeLabel(currentPhase?.status, "none");
 					const testsState = normalizeLabel(currentPhase?.testStatus, "?");
 					const reviewState = normalizeLabel(currentPhase?.reviewStatus, "?");
+					const cosplayName = cosplay?.active
+						? truncateToWidth(cosplay.name || "custom", Math.max(10, rightWidth - 10), "...")
+						: theme.fg("muted", "none");
+					const cosplayState = cosplay?.active
+						? theme.fg("success", cosplay.source || "active")
+						: theme.fg("muted", "off");
 
 					const left: string[] = [
 						theme.fg("accent", "MEMORY"),
@@ -197,6 +208,10 @@ export default function dashboardUI(pi: ExtensionAPI) {
 						kv(theme, "state", theme.fg(statusColor(phaseState), phaseState)),
 						kv(theme, "tests", theme.fg(statusColor(testsState), testsState)),
 						kv(theme, "review", theme.fg(statusColor(reviewState), reviewState)),
+						"",
+						theme.fg("accent", "COSPLAY"),
+						kv(theme, "name", cosplayName),
+						kv(theme, "state", cosplayState),
 					];
 
 					const lines: string[] = [];
