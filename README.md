@@ -1,6 +1,6 @@
 # pi-extensions
 
-Reusable PI extensions for token-efficient memory, phased execution, and review-gated development.
+Reusable PI extensions for token-efficient memory, phased execution, dashboard visibility, and in-character agent workflows.
 
 ## Included Extensions
 
@@ -15,6 +15,53 @@ Reusable PI extensions for token-efficient memory, phased execution, and review-
 
 - `extensions/plan-gate.ts`
   Adds `/plan` command and `plan_gate` tool to keep sessions in planning mode until you explicitly approve coding (`/plan go`).
+
+- `extensions/dashboard-ui.ts`
+  Renders a PI dashboard widget showing memory, hygiene, phase state, and cosplay state.
+
+- `extensions/cosplay.ts`
+  Adds full-character cosplay mode with concise prompting, preset support, persistence, and dashboard/footer status.
+
+## Cosplay Extension
+
+### Commands
+
+- `/cos <preset>` — enable a named preset from `cosplay.json`
+- `/cos <persona prompt>` — enable a custom persona
+- `/cos` — show current cosplay state
+- `/cos list` — list presets
+- `/uncos` — disable cosplay mode
+
+### Presets
+
+Cosplay presets are loaded from:
+
+- `~/.pi/agent/cosplay.json`
+- `.pi/cosplay.json`
+
+Example:
+
+```json
+{
+  "tino": {
+    "prompt": "You're Tino, an engineer. Stay fully in character. Be direct, competent, practical, and concise."
+  },
+  "reviewer": "You're a blunt senior reviewer. Stay fully in character and keep replies concise."
+}
+```
+
+### Behavior
+
+When cosplay is active, the extension:
+
+- injects persona instructions through `before_agent_start`
+- keeps replies in character
+- pushes for concise, low-fluff responses
+- persists state across reload/resume
+- writes cosplay state to project/session `.pi` files so the dashboard can render it
+- shows status in both the footer and the dashboard
+
+Custom personas also get a derived short name for dashboard display.
 
 ## Install
 
