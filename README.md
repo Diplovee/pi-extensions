@@ -50,6 +50,12 @@ Example:
 }
 ```
 
+A starter config is included at:
+
+- `cosplay.sample.json`
+
+Copy it to `~/.pi/agent/cosplay.json` and customize it.
+
 ### Behavior
 
 When cosplay is active, the extension:
