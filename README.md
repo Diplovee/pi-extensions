@@ -22,6 +22,12 @@ Reusable PI extensions for token-efficient memory, phased execution, dashboard v
 - `extensions/cosplay.ts`
   Adds full-character cosplay mode with concise prompting, preset support, persistence, and dashboard/footer status.
 
+- `extensions/themed-ui/`
+  Custom PI chrome with themed header, themed input/editor borders, mascot picker, and a compact styled footer.
+
+- `themes/*.json`
+  Five custom themes: `zim-flag`, `nord-night`, `everforest-dark`, `pi-blueprint`, and `tokyo-night`.
+
 ## Cosplay Extension
 
 ### Commands
@@ -68,6 +74,24 @@ When cosplay is active, the extension:
 - shows status in both the footer and the dashboard
 
 Custom personas also get a derived short name for dashboard display.
+
+## Themed UI
+
+### Commands
+
+- `/pi-theme` — pick a theme
+- `/pi-theme <name>` — set theme directly
+- `/pi-theme-next` / `/pi-theme-prev` / `/pi-theme-back`
+- `/pi-mascot` — pick a mascot
+- `/pi-mascot <name>` — set mascot directly
+- `/pi-mascot random`
+- `/pi-mascot-next` / `/pi-mascot-prev` / `/pi-mascot-back`
+- `/pi-header-default` / `/pi-header-theme`
+
+### Notes
+
+- The dashboard extension now defers footer ownership when `themed-ui` is installed so both can coexist better.
+- Themes are installed into `~/.pi/agent/themes/` by `install.sh`.
 
 ## Install
 

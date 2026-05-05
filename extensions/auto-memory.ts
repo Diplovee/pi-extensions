@@ -468,14 +468,7 @@ export default function autoMemoryExtension(pi: ExtensionAPI) {
 
 	const refreshWidget = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI || !state) return;
-		const percent = ctx.getContextUsage()?.percent ?? null;
-		if (isDashboardEnabled(ctx.cwd)) {
-			ctx.ui.setWidget("auto-memory", undefined);
-		} else {
-			ctx.ui.setWidget("auto-memory", buildMemoryLines(state, ctx.ui.theme, percent, isTerseEnabled(ctx.cwd)), {
-				placement: "belowEditor",
-			});
-		}
+		ctx.ui.setWidget("auto-memory", undefined);
 		ctx.ui.setStatus("auto-memory", ctx.ui.theme.fg(state.enabled ? "success" : "warning", state.enabled ? "mem:on" : "mem:off"));
 	};
 

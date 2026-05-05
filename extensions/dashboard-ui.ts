@@ -97,6 +97,12 @@ function kv(theme: { fg: (color: string, text: string) => string }, label: strin
 	return `${theme.fg("dim", `${label}:`.padEnd(labelWidth + 1, " "))}${value}`;
 }
 
+function hasThemedUiInstalled(): boolean {
+	const home = process.env.HOME || process.env.USERPROFILE;
+	if (!home) return false;
+	return existsSync(join(home, ".pi", "agent", "extensions", "themed-ui"));
+}
+
 function statusColor(value: string | undefined): string {
 	const normalized = (value ?? "").toLowerCase();
 	if (normalized.includes("pass") || normalized.includes("done") || normalized.includes("approved")) return "success";
@@ -254,6 +260,10 @@ export default function dashboardUI(pi: ExtensionAPI) {
 				},
 			};
 		});
+
+		if (hasThemedUiInstalled()) {
+			return;
+		}
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const unsub = footerData.onBranchChange(() => tui.requestRender());

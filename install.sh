@@ -15,6 +15,14 @@ ln -sf "${REPO_DIR}/extensions/phase-tracker.ts" "${TARGET_DIR}/phase-tracker.ts
 ln -sf "${REPO_DIR}/extensions/agent-search-tools.ts" "${TARGET_DIR}/agent-search-tools.ts"
 ln -sf "${REPO_DIR}/extensions/plan-gate.ts" "${TARGET_DIR}/plan-gate.ts"
 ln -sf "${REPO_DIR}/extensions/cosplay.ts" "${TARGET_DIR}/cosplay.ts"
+ln -sfn "${REPO_DIR}/extensions/themed-ui" "${TARGET_DIR}/themed-ui"
+
+mkdir -p "${HOME}/.pi/agent/themes"
+ln -sf "${REPO_DIR}/themes/zim-flag.json" "${HOME}/.pi/agent/themes/zim-flag.json"
+ln -sf "${REPO_DIR}/themes/nord-night.json" "${HOME}/.pi/agent/themes/nord-night.json"
+ln -sf "${REPO_DIR}/themes/everforest-dark.json" "${HOME}/.pi/agent/themes/everforest-dark.json"
+ln -sf "${REPO_DIR}/themes/pi-blueprint.json" "${HOME}/.pi/agent/themes/pi-blueprint.json"
+ln -sf "${REPO_DIR}/themes/tokyo-night.json" "${HOME}/.pi/agent/themes/tokyo-night.json"
 
 echo "Installed:"
 echo "  auto-memory.ts"
@@ -26,6 +34,8 @@ echo "  phase-tracker.ts"
 echo "  agent-search-tools.ts"
 echo "  plan-gate.ts"
 echo "  cosplay.ts"
+echo "  themed-ui/"
+echo "  themes/{zim-flag,nord-night,everforest-dark,pi-blueprint,tokyo-night}.json"
 echo
 echo "Optional: copy ${REPO_DIR}/cosplay.sample.json to ~/.pi/agent/cosplay.json and customize presets."
 echo "Reload or restart PI to pick up extension changes."

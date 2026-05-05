@@ -285,22 +285,7 @@ export default function contextHygiene(pi: ExtensionAPI) {
 
 	const refresh = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		const terse = isTerseEnabled(ctx.cwd);
-		const mode = state.enabled ? "on" : "off";
-		const bar = renderContextBar(ctx.ui.theme, state.lastContextPercent, terse ? 10 : 16);
-		if (isDashboardEnabled(ctx.cwd)) {
-			ctx.ui.setWidget("context-hygiene", undefined);
-		} else {
-			ctx.ui.setWidget(
-				"context-hygiene",
-				[
-					ctx.ui.theme.fg(state.enabled ? "success" : "warning", terse ? `Hygiene: ${mode.toUpperCase()}` : `Context Hygiene: ${mode.toUpperCase()}`),
-					`${ctx.ui.theme.fg("muted", `${terse ? "ctx" : "context"}:`)} ${bar} ${ctx.ui.theme.fg("muted", `| noise: ${state.lastNoiseScore}`)}`,
-					ctx.ui.theme.fg("dim", state.lastCompactReason ? `${terse ? "compact" : "last compact"}: ${state.lastCompactReason}` : terse ? "compact: none" : "last compact: none"),
-				],
-				{ placement: "belowEditor" },
-			);
-		}
+		ctx.ui.setWidget("context-hygiene", undefined);
 		ctx.ui.setStatus(
 			"context-hygiene",
 			ctx.ui.theme.fg(state.enabled ? "success" : "warning", state.enabled ? "hygiene:on" : "hygiene:off"),

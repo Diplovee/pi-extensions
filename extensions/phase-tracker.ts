@@ -313,13 +313,7 @@ export default function phaseTracker(pi: ExtensionAPI) {
 
 	const refresh = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		if (isDashboardEnabled(ctx.cwd)) {
-			ctx.ui.setWidget("phase-tracker", undefined);
-		} else {
-			ctx.ui.setWidget("phase-tracker", widgetLines(state, ctx.ui.theme, isTerseEnabled(ctx.cwd)), {
-				placement: "belowEditor",
-			});
-		}
+		ctx.ui.setWidget("phase-tracker", undefined);
 		const phase = getPhase(state);
 		ctx.ui.setStatus(
 			"phase-tracker",
