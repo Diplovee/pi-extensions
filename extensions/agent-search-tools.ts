@@ -3,7 +3,7 @@
  *
  * Adds lightweight tools to reduce context usage when looking things up:
  * - web_search: DuckDuckGo HTML search (no API key)
- * - search_repo: local repo text / filename search
+ * - search_repo: local repo text / filename search with max_results and structured match details
  */
 
 import { spawnSync } from "node:child_process";
@@ -40,6 +40,7 @@ const SearchRepoParams = Type.Object({
 		}),
 	),
 	path_filter: Type.Optional(Type.String({ description: "Optional path filter, e.g. src or src/components" })),
+	max_results: Type.Optional(Type.Number({ description: "Maximum number of results", default: 10 })),
 });
 
 function sleep(ms: number): Promise<void> {
@@ -68,52 +69,129 @@ function normalizePathFilter(pathFilter?: string): string | null {
 	return cleaned;
 }
 
-function runCommand(command: string, args: string[]): { ok: boolean; output: string } {
+interface CommandResult {
+	ok: boolean;
+	output: string;
+	code: number | null;
+	message?: string;
+}
+
+interface RepoTextMatch {
+	file: string;
+	line: number | null;
+	text: string;
+}
+
+interface RepoFilenameMatch {
+	path: string;
+}
+
+interface RepoSearchResult {
+	ok: boolean;
+	output: string;
+	count: number;
+	commandError?: string;
+	matches: Array<RepoTextMatch | RepoFilenameMatch>;
+}
+
+function runCommand(command: string, args: string[], cwd: string): CommandResult {
 	const proc = spawnSync(command, args, {
-		cwd: process.cwd(),
+		cwd,
 		encoding: "utf-8",
 		maxBuffer: 1024 * 1024,
 	});
-	if (proc.status !== 0) {
-		return { ok: false, output: (proc.stderr || "").trim() };
+	if (proc.error) {
+		return { ok: false, output: "", code: null, message: proc.error.message };
 	}
-	return { ok: true, output: (proc.stdout || "").trim() };
+	if (proc.status !== 0) {
+		return { ok: false, output: (proc.stderr || proc.stdout || "").trim(), code: proc.status };
+	}
+	return { ok: true, output: (proc.stdout || "").trim(), code: proc.status };
 }
 
-function runSearchRepoText(query: string, pathFilter?: string): string {
-	const args = ["--line-number", "--max-columns", "200", "--max-count", "3", "--glob", "!node_modules/**", "--", query, "."];
+function parseTextMatches(output: string, limit: number): RepoTextMatch[] {
+	return output
+		.split("\n")
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.map((line) => {
+			const match = line.match(/^(.+?):(\d+):(.*)$/);
+			if (!match) return { file: line, line: null, text: "" } satisfies RepoTextMatch;
+			return {
+				file: match[1],
+				line: Number(match[2]),
+				text: match[3].trim(),
+			} satisfies RepoTextMatch;
+		})
+		.slice(0, limit);
+}
+
+function runSearchRepoText(cwd: string, query: string, pathFilter: string | undefined, maxResults: number): RepoSearchResult {
+	const args = ["--line-number", "--max-columns", "200", "--max-count", String(Math.max(1, maxResults)), "--glob", "!node_modules/**", "--", query, "."];
 	const filter = normalizePathFilter(pathFilter);
 	if (filter) {
 		args.splice(args.length - 1, 1, filter);
 	}
 
-	const rg = runCommand("rg", args);
-	if (!rg.ok || !rg.output) return "No results found.";
+	const rg = runCommand("rg", args, cwd);
+	if (!rg.ok) {
+		const message = rg.message || rg.output || "ripgrep search failed";
+		const noResults = rg.code === 1;
+		return {
+			ok: false,
+			output: noResults ? "No results found." : `Search command failed: ${message}`,
+			count: 0,
+			commandError: noResults ? undefined : message,
+			matches: [],
+		};
+	}
+	if (!rg.output) return { ok: false, output: "No results found.", count: 0, matches: [] };
 
-	const lines = rg.output.split("\n").slice(0, MAX_REPO_RESULTS);
-	return lines.join("\n");
+	const matches = parseTextMatches(rg.output, maxResults);
+	return {
+		ok: matches.length > 0,
+		output: matches.length > 0 ? matches.map((match) => `${match.file}:${match.line ?? "?"}:${match.text}`).join("\n") : "No results found.",
+		count: matches.length,
+		matches,
+	};
 }
 
-function runSearchRepoFilename(query: string, pathFilter?: string): string {
+function runSearchRepoFilename(cwd: string, query: string, pathFilter: string | undefined, maxResults: number): RepoSearchResult {
 	const filter = normalizePathFilter(pathFilter);
 	const findArgs = [".", "-type", "f"];
 	if (filter) {
 		findArgs.push("-path", `./${filter}/*`);
 	}
 
-	const out = runCommand("find", findArgs);
-	if (!out.ok || !out.output) return "No results found.";
+	const out = runCommand("find", findArgs, cwd);
+	if (!out.ok) {
+		const message = out.message || out.output || "find search failed";
+		return {
+			ok: false,
+			output: `Search command failed: ${message}`,
+			count: 0,
+			commandError: message,
+			matches: [],
+		};
+	}
+	if (!out.output) return { ok: false, output: "No results found.", count: 0, matches: [] };
 
 	const needle = query.toLowerCase();
-	const lines = out.output
+	const matches = out.output
 		.split("\n")
 		.map((line) => line.trim())
 		.filter(Boolean)
 		.filter((line) => line.toLowerCase().includes(needle))
-		.slice(0, MAX_REPO_RESULTS);
+		.slice(0, maxResults)
+		.map((path) => ({ path }) satisfies RepoFilenameMatch);
 
-	if (lines.length === 0) return "No results found.";
-	return lines.join("\n");
+	if (matches.length === 0) return { ok: false, output: "No results found.", count: 0, matches: [] };
+	return {
+		ok: true,
+		output: matches.map((match) => match.path).join("\n"),
+		count: matches.length,
+		matches,
+	};
 }
 
 async function performWebSearch(query: string, maxResults: number): Promise<{ ok: boolean; results: WebSearchItem[]; message?: string }> {
@@ -147,13 +225,11 @@ async function performWebSearch(query: string, maxResults: number): Promise<{ ok
 	}
 }
 
-function performRepoSearch(query: string, searchType: RepoSearchType, pathFilter?: string): { ok: boolean; output: string; count: number } {
-	const output = searchType === "filename" ? runSearchRepoFilename(query, pathFilter) : runSearchRepoText(query, pathFilter);
-	return {
-		ok: output !== "No results found.",
-		output,
-		count: output === "No results found." ? 0 : output.split("\n").filter(Boolean).length,
-	};
+function performRepoSearch(cwd: string, query: string, searchType: RepoSearchType, pathFilter?: string, maxResults = 10): RepoSearchResult {
+	const limit = Math.max(1, Math.min(MAX_REPO_RESULTS, Math.floor(maxResults)));
+	return searchType === "filename"
+		? runSearchRepoFilename(cwd, query, pathFilter, limit)
+		: runSearchRepoText(cwd, query, pathFilter, limit);
 }
 
 function isLikelyWebQuery(query: string): boolean {
@@ -224,19 +300,20 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 		label: "Search Repo",
 		description: "Search the local codebase for text patterns, filenames, or symbols.",
 		parameters: SearchRepoParams,
-		async execute(_toolCallId, params) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const query = params.query.trim();
 			const searchType = (params.search_type ?? "text") as RepoSearchType;
 			const pathFilter = params.path_filter?.trim();
+			const maxResults = Math.max(1, Math.min(MAX_REPO_RESULTS, Math.floor(params.max_results ?? 10)));
 
 			if (!query) {
 				return {
 					content: [{ type: "text", text: "No results found." }],
-					details: { ok: false, message: "Query is empty", query, searchType },
+					details: { ok: false, message: "Query is empty", query, searchType, results: [] },
 				};
 			}
 
-			const result = performRepoSearch(query, searchType, pathFilter);
+			const result = performRepoSearch(ctx.cwd, query, searchType, pathFilter, maxResults);
 			return {
 				content: [{ type: "text", text: result.output || "No results found." }],
 				details: {
@@ -245,6 +322,10 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 					searchType,
 					pathFilter: pathFilter || undefined,
 					count: result.count,
+					maxResults,
+					cwd: ctx.cwd,
+					commandError: result.commandError,
+					results: result.matches,
 				},
 			};
 		},
@@ -254,14 +335,16 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 					theme.fg("muted", args.search_type ?? "text") +
 					" " +
 					theme.fg("dim", `"${args.query}"`) +
-					(args.path_filter ? theme.fg("dim", ` in ${args.path_filter}`) : ""),
+					(args.path_filter ? theme.fg("dim", ` in ${args.path_filter}`) : "") +
+					(args.max_results ? theme.fg("dim", ` max=${args.max_results}`) : ""),
 				0,
 				0,
 			);
 		},
 		renderResult(result, _context, theme) {
-			const details = result.details as { ok?: boolean; count?: number } | undefined;
+			const details = result.details as { ok?: boolean; count?: number; commandError?: string } | undefined;
 			if (details?.ok) return new Text(theme.fg("success", `✓ ${details.count ?? 0} match(es)`), 0, 0);
+			if (details?.commandError) return new Text(theme.fg("error", `! ${details.commandError}`), 0, 0);
 			return new Text(theme.fg("warning", "! No results"), 0, 0);
 		},
 	});
@@ -306,8 +389,8 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 			if (textMatch || fileMatch) {
 				const query = (textMatch?.[2] ?? fileMatch?.[2] ?? "").trim();
 				const type: RepoSearchType = fileMatch ? "filename" : "text";
-				const result = performRepoSearch(query, type);
-				ctx.ui.notify(compactLines(result.output, 14), result.ok ? "info" : "warning");
+				const result = performRepoSearch(ctx.cwd, query, type);
+				ctx.ui.notify(compactLines(result.output, 14), result.commandError ? "error" : result.ok ? "info" : "warning");
 				return;
 			}
 
@@ -329,8 +412,8 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 				return;
 			}
 
-			const repoResult = performRepoSearch(raw, "text");
-			ctx.ui.notify(compactLines(repoResult.output, 14), repoResult.ok ? "info" : "warning");
+			const repoResult = performRepoSearch(ctx.cwd, raw, "text");
+			ctx.ui.notify(compactLines(repoResult.output, 14), repoResult.commandError ? "error" : repoResult.ok ? "info" : "warning");
 		},
 	});
 }

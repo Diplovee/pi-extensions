@@ -8,10 +8,10 @@ Reusable PI extensions for token-efficient memory, phased execution, dashboard v
   Keeps a slim, persistent memory store up to date without injecting it into prompt context every turn.
 
 - `extensions/phase-tracker.ts`
-  Tracks implementation phases, todos, testing, regressions, and explicit user review before advancing.
+  Tracks implementation phases, todos, testing, regressions, and explicit user review before advancing. Supports `todoTextMatch` for completing todos when `todoId` is unknown.
 
 - `extensions/agent-search-tools.ts`
-  Adds lightweight `web_search` (DuckDuckGo HTML) and `search_repo` (ripgrep/find) tools plus `/search` command to reduce context-heavy exploration.
+  Adds lightweight `web_search` (DuckDuckGo HTML) and `search_repo` (ripgrep/find) tools plus `/search` command to reduce context-heavy exploration. Supports `max_results` and returns structured match details.
 
 - `extensions/plan-gate.ts`
   Adds `/plan` command and `plan_gate` tool to keep sessions in planning mode until you explicitly approve coding (`/plan go`).
@@ -27,6 +27,51 @@ Reusable PI extensions for token-efficient memory, phased execution, dashboard v
 
 - `themes/*.json`
   Five custom themes: `zim-flag`, `nord-night`, `everforest-dark`, `pi-blueprint`, and `tokyo-night`.
+
+## Phase Tracker
+
+### Tool
+
+`phase_tracker` actions:
+
+- `create_plan` — create/reset a phased plan
+- `add_phase` — add a phase with `phaseName` and `goal`
+- `add_todo` — add a todo with `todoText` to `phaseId` or the current phase
+- `start_phase` — start a specific phase or the next unfinished phase
+- `complete_todo` — complete by `todoId` or `todoTextMatch` on `phaseId` or the current phase
+- `log_test` — set `testOutcome` to `pass` or `fail`
+- `request_review` — move the active/current phase to review
+- `log_error` — record a regression and reopen work
+- `next_phase` — advance only after todos are done, tests pass, and review is approved
+- `list` — return current state
+
+### Notes
+
+- Many actions now default to the current phase when `phaseId` is omitted.
+- `complete_todo` supports `todoTextMatch` for exact text completion when the model does not know the todo ID.
+- Duplicate todo text in the same phase is rejected to reduce repeated tool calls.
+- Tool results include structured active-phase metadata and missing requirement hints.
+
+## Agent Search Tools
+
+### Tools
+
+- `web_search`
+  - `query` — search string
+  - `max_results` — optional result cap
+
+- `search_repo`
+  - `query` — text, symbol, or filename to find
+  - `search_type` — `text` or `filename`
+  - `path_filter` — optional repo subpath filter
+  - `max_results` — optional result cap
+
+### Notes
+
+- `search_repo` runs in the active session/project cwd.
+- Text search returns structured match details with `file`, `line`, and `text`.
+- Filename search returns structured match details with `path`.
+- Tool results distinguish command failures from genuine no-result searches.
 
 ## Cosplay Extension
 

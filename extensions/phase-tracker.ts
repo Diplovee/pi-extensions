@@ -12,6 +12,8 @@
  *
  * Agent tool:
  * - phase_tracker
+ *   - complete_todo supports todoId or todoTextMatch
+ *   - many actions default to the current phase when phaseId is omitted
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -65,6 +67,17 @@ interface TrackerToolResult {
 	ok: boolean;
 	message: string;
 	state: TrackerState;
+	activePhase?: {
+		id: number;
+		name: string;
+		status: PhaseStatus;
+		testStatus: TestStatus;
+		reviewStatus: ReviewStatus;
+		errorCount: number;
+		todos: TodoItem[];
+	};
+	missingRequirements?: string[];
+	meta?: Record<string, unknown>;
 }
 
 interface TerseConfig {
@@ -93,6 +106,7 @@ const PhaseTrackerParams = Type.Object({
 	goal: Type.Optional(Type.String({ description: "Goal of the phase" })),
 	phaseId: Type.Optional(Type.Number({ description: "Phase ID to operate on" })),
 	todoText: Type.Optional(Type.String({ description: "Todo text" })),
+	todoTextMatch: Type.Optional(Type.String({ description: "Todo text to match when todoId is unknown" })),
 	todoId: Type.Optional(Type.Number({ description: "Todo ID to complete" })),
 	testOutcome: Type.Optional(
 		StringEnum(["pass", "fail"] as const, { description: "Whether tests passed or failed" }),
@@ -250,15 +264,24 @@ function setCurrentPhase(state: TrackerState, phase: Phase): void {
 	}
 }
 
-function canCompletePhase(phase: Phase): { ok: boolean; reason?: string } {
+function canCompletePhase(phase: Phase): { ok: boolean; reason?: string; missingRequirements?: string[] } {
+	const missingRequirements: string[] = [];
 	if (phase.todos.some((todo) => !todo.done)) {
-		return { ok: false, reason: "There are unfinished todos in the current phase." };
+		missingRequirements.push("unfinished_todos");
 	}
 	if (phase.testStatus !== "pass") {
-		return { ok: false, reason: "Tests have not passed for the current phase." };
+		missingRequirements.push("tests_not_passed");
 	}
 	if (phase.reviewStatus !== "approved") {
-		return { ok: false, reason: "User review has not approved this phase yet." };
+		missingRequirements.push("review_not_approved");
+	}
+	if (missingRequirements.length > 0) {
+		const messages: Record<string, string> = {
+			unfinished_todos: "There are unfinished todos in the current phase.",
+			tests_not_passed: "Tests have not passed for the current phase.",
+			review_not_approved: "User review has not approved this phase yet.",
+		};
+		return { ok: false, reason: messages[missingRequirements[0]], missingRequirements };
 	}
 	return { ok: true };
 }
@@ -281,17 +304,42 @@ function appendPhase(state: TrackerState, name: string, goal: string, todos: str
 	return phase;
 }
 
-function ok(action: string, state: TrackerState, message: string): { content: { type: "text"; text: string }[]; details: TrackerToolResult } {
+function getActivePhaseSummary(state: TrackerState): TrackerToolResult["activePhase"] {
+	const phase = getPhase(state);
+	if (!phase) return undefined;
 	return {
-		content: [{ type: "text", text: message }],
-		details: { action, ok: true, message, state: cloneState(state) },
+		id: phase.id,
+		name: phase.name,
+		status: phase.status,
+		testStatus: phase.testStatus,
+		reviewStatus: phase.reviewStatus,
+		errorCount: phase.errorCount,
+		todos: phase.todos.map((todo) => ({ ...todo })),
 	};
 }
 
-function fail(action: string, state: TrackerState, message: string): { content: { type: "text"; text: string }[]; details: TrackerToolResult } {
+function ok(
+	action: string,
+	state: TrackerState,
+	message: string,
+	meta?: Record<string, unknown>,
+): { content: { type: "text"; text: string }[]; details: TrackerToolResult } {
 	return {
 		content: [{ type: "text", text: message }],
-		details: { action, ok: false, message, state: cloneState(state) },
+		details: { action, ok: true, message, state: cloneState(state), activePhase: getActivePhaseSummary(state), meta },
+	};
+}
+
+function fail(
+	action: string,
+	state: TrackerState,
+	message: string,
+	missingRequirements?: string[],
+	meta?: Record<string, unknown>,
+): { content: { type: "text"; text: string }[]; details: TrackerToolResult } {
+	return {
+		content: [{ type: "text", text: message }],
+		details: { action, ok: false, message, state: cloneState(state), activePhase: getActivePhaseSummary(state), missingRequirements, meta },
 	};
 }
 
@@ -359,15 +407,32 @@ export default function phaseTracker(pi: ExtensionAPI) {
 				}
 
 				case "add_todo": {
-					const phase = getPhase(state, params.phaseId);
-					if (!phase || !params.todoText) {
+					const phase = getPhase(state, params.phaseId) ?? getPhase(state);
+					const todoText = params.todoText?.trim();
+					if (!phase || !todoText) {
 						return fail("add_todo", state, "A target phase and todoText are required.");
 					}
-					phase.todos.push({ id: state.nextTodoId++, text: params.todoText.trim(), done: false });
+					const existing = phase.todos.find((entry) => entry.text.trim().toLowerCase() === todoText.toLowerCase());
+					if (existing) {
+						return fail(
+							"add_todo",
+							state,
+							`Todo already exists in phase #${phase.id}: #${existing.id} "${existing.text}".`,
+							undefined,
+							{ phaseId: phase.id, phaseName: phase.name, todoId: existing.id, todoText: existing.text, duplicate: true },
+						);
+					}
+					const todo = { id: state.nextTodoId++, text: todoText, done: false };
+					phase.todos.push(todo);
 					if (phase.status === "done") phase.status = "in_progress";
 					persist(ctx.cwd);
 					refresh(ctx);
-					return ok("add_todo", state, `Added todo to phase #${phase.id}.`);
+					return ok("add_todo", state, `Added todo #${todo.id} "${todo.text}" to phase #${phase.id} "${phase.name}".`, {
+						phaseId: phase.id,
+						phaseName: phase.name,
+						todoId: todo.id,
+						todoText: todo.text,
+					});
 				}
 
 				case "start_phase": {
@@ -383,23 +448,36 @@ export default function phaseTracker(pi: ExtensionAPI) {
 				}
 
 				case "complete_todo": {
-					const phase = getPhase(state, params.phaseId);
-					if (!phase || params.todoId === undefined) {
-						return fail("complete_todo", state, "A target phase and todoId are required.");
+					const phase = getPhase(state, params.phaseId) ?? getPhase(state);
+					if (!phase) {
+						return fail("complete_todo", state, "A target phase is required.");
 					}
-					const todo = phase.todos.find((entry) => entry.id === params.todoId);
+					const todoTextMatch = params.todoTextMatch?.trim().toLowerCase() || params.todoText?.trim().toLowerCase();
+					const todo =
+						(params.todoId !== undefined ? phase.todos.find((entry) => entry.id === params.todoId) : undefined) ??
+						(todoTextMatch ? phase.todos.find((entry) => entry.text.trim().toLowerCase() === todoTextMatch) : undefined);
 					if (!todo) {
-						return fail("complete_todo", state, `Todo #${params.todoId} not found.`);
+						return fail("complete_todo", state, "Todo not found. Provide todoId or an exact todoTextMatch.", undefined, {
+							phaseId: phase.id,
+							phaseName: phase.name,
+							todoId: params.todoId,
+							todoTextMatch: params.todoTextMatch ?? params.todoText,
+						});
 					}
 					todo.done = true;
 					if (phase.status === "not_started") phase.status = "in_progress";
 					persist(ctx.cwd);
 					refresh(ctx);
-					return ok("complete_todo", state, `Completed todo #${todo.id} in phase #${phase.id}.`);
+					return ok("complete_todo", state, `Completed todo #${todo.id} "${todo.text}" in phase #${phase.id} "${phase.name}".`, {
+						phaseId: phase.id,
+						phaseName: phase.name,
+						todoId: todo.id,
+						todoText: todo.text,
+					});
 				}
 
 				case "log_test": {
-					const phase = getPhase(state, params.phaseId);
+					const phase = getPhase(state, params.phaseId) ?? getPhase(state);
 					if (!phase || !params.testOutcome) {
 						return fail("log_test", state, "A target phase and testOutcome are required.");
 					}
@@ -415,7 +493,7 @@ export default function phaseTracker(pi: ExtensionAPI) {
 				}
 
 				case "request_review": {
-					const phase = getPhase(state, params.phaseId);
+					const phase = getPhase(state, params.phaseId) ?? getPhase(state);
 					if (!phase) {
 						return fail("request_review", state, "No target phase found.");
 					}
@@ -434,7 +512,7 @@ export default function phaseTracker(pi: ExtensionAPI) {
 				}
 
 				case "log_error": {
-					const phase = getPhase(state, params.phaseId);
+					const phase = getPhase(state, params.phaseId) ?? getPhase(state);
 					if (!phase || !params.error) {
 						return fail("log_error", state, "A target phase and error text are required.");
 					}
@@ -456,7 +534,10 @@ export default function phaseTracker(pi: ExtensionAPI) {
 					}
 					const completion = canCompletePhase(phase);
 					if (!completion.ok) {
-						return fail("next_phase", state, completion.reason || "Current phase is not ready to complete.");
+						return fail("next_phase", state, completion.reason || "Current phase is not ready to complete.", completion.missingRequirements, {
+							phaseId: phase.id,
+							phaseName: phase.name,
+						});
 					}
 					phase.status = "done";
 					const next = state.phases.find((entry) => entry.id > phase.id && entry.status !== "done");
@@ -473,7 +554,7 @@ export default function phaseTracker(pi: ExtensionAPI) {
 				}
 
 				case "list":
-					return ok("list", state, renderStateText(state));
+					return ok("list", state, renderStateText(state), { rendered: renderStateText(state) });
 			}
 
 			return fail(params.action, state, `Unknown action: ${params.action}`);
@@ -483,6 +564,9 @@ export default function phaseTracker(pi: ExtensionAPI) {
 			let line = theme.fg("toolTitle", theme.bold("phase_tracker ")) + theme.fg("muted", args.action);
 			if (args.phaseId !== undefined) line += ` ${theme.fg("accent", `#${args.phaseId}`)}`;
 			if (args.phaseName) line += ` ${theme.fg("dim", `"${args.phaseName}"`)}`;
+			if (args.todoId !== undefined) line += ` ${theme.fg("accent", `todo#${args.todoId}`)}`;
+			if (args.todoText) line += ` ${theme.fg("dim", `todo="${args.todoText}"`)}`;
+			if (args.todoTextMatch) line += ` ${theme.fg("dim", `match="${args.todoTextMatch}"`)}`;
 			return new Text(line, 0, 0);
 		},
 
@@ -493,15 +577,22 @@ export default function phaseTracker(pi: ExtensionAPI) {
 				return new Text(text?.type === "text" ? text.text : "", 0, 0);
 			}
 
+			const activePhaseText = details.activePhase
+				? `active: #${details.activePhase.id} ${details.activePhase.name} [${details.activePhase.status}]`
+				: "active: none";
+			const missingText = details.missingRequirements?.length
+				? `\nmissing: ${details.missingRequirements.join(", ")}`
+				: "";
+
 			if (!details.ok) {
-				return new Text(theme.fg("error", details.message), 0, 0);
+				return new Text(theme.fg("error", details.message) + theme.fg("dim", `\n${activePhaseText}${missingText}`), 0, 0);
 			}
 
 			if (!expanded) {
-				return new Text(theme.fg("success", "✓ ") + theme.fg("muted", details.message), 0, 0);
+				return new Text(theme.fg("success", "✓ ") + theme.fg("muted", `${details.message} (${activePhaseText})`), 0, 0);
 			}
 
-			return new Text(theme.fg("success", "✓ ") + details.message + `\n\n${renderStateText(details.state)}`, 0, 0);
+			return new Text(theme.fg("success", "✓ ") + details.message + `\n${activePhaseText}\n\n${renderStateText(details.state)}`, 0, 0);
 		},
 	});
 
