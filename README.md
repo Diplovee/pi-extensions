@@ -25,8 +25,33 @@ Reusable PI extensions for token-efficient memory, phased execution, dashboard v
 - `extensions/themed-ui/`
   Custom PI chrome with themed header, themed input/editor borders, mascot picker, and a compact styled footer.
 
+- `extensions/subagent/`
+  Global subagent orchestration with isolated child Pi processes, single/parallel/chain modes, bounded concurrency, streamed status, cancellation, and Markdown agent roles.
+
 - `themes/*.json`
   Five custom themes: `zim-flag`, `nord-night`, `everforest-dark`, `pi-blueprint`, and `tokyo-night`.
+
+## Subagents
+
+The subagent extension is designed for global reuse across projects. It discovers user roles from `~/.pi/agent/agents/` and can optionally discover trusted project roles from `.pi/agents/` when invoked with `agentScope: "project"` or `"both"`.
+
+The registered `subagent` tool supports exactly one execution mode per call:
+
+- Single: `{ agent, task }`
+- Parallel: `{ tasks: [{ agent, task }] }` (maximum 8 tasks, 4 concurrent)
+- Chain: `{ chain: [{ agent, task }] }` with `{previous}` handoffs
+
+Built-in roles are `scout`, `researcher`, `planner`, `worker`, `reviewer`, and `tester`. Role files use YAML frontmatter to define least-privilege tools. Models are intentionally omitted by default so the extension uses each user's configured Pi model; add a model only when that alias is known to exist.
+
+Safety defaults:
+
+- Project-local roles require explicit scope and interactive confirmation.
+- Child processes run with `--no-session` and `--exclude-tools subagent`.
+- Parallel execution is for independent work; writing should remain serialized.
+- Child output, usage, failures, and exit status are returned in structured tool details.
+- Abort signals terminate child processes and clean temporary prompt files.
+
+Workflow prompt templates include `/implement`, `/scout-and-plan`, `/research-and-plan`, `/implement-and-review`, and `/verify`.
 
 ## Phase Tracker
 
@@ -140,11 +165,13 @@ Custom personas also get a derived short name for dashboard display.
 
 ## Install
 
-Run:
+Run from this repository:
 
 ```bash
 ./install.sh
 ```
+
+This installs the extension globally for Pi, including the subagent role files in `~/.pi/agent/agents/` and workflow prompts in `~/.pi/agent/prompts/`.
 
 This symlinks the extensions into `~/.pi/agent/extensions/`.
 

@@ -17,6 +17,17 @@ ln -sf "${REPO_DIR}/extensions/plan-gate.ts" "${TARGET_DIR}/plan-gate.ts"
 ln -sf "${REPO_DIR}/extensions/cosplay.ts" "${TARGET_DIR}/cosplay.ts"
 ln -sfn "${REPO_DIR}/extensions/themed-ui" "${TARGET_DIR}/themed-ui"
 
+# Subagent extension and reusable role/workflow definitions.
+mkdir -p "${TARGET_DIR}/subagent" "${HOME}/.pi/agent/agents" "${HOME}/.pi/agent/prompts"
+ln -sf "${REPO_DIR}/extensions/subagent/index.ts" "${TARGET_DIR}/subagent/index.ts"
+ln -sf "${REPO_DIR}/extensions/subagent/agents.ts" "${TARGET_DIR}/subagent/agents.ts"
+for agent_file in "${REPO_DIR}"/extensions/subagent/agents/*.md; do
+  ln -sf "${agent_file}" "${HOME}/.pi/agent/agents/$(basename "${agent_file}")"
+done
+for prompt_file in "${REPO_DIR}"/extensions/subagent/prompts/*.md; do
+  ln -sf "${prompt_file}" "${HOME}/.pi/agent/prompts/$(basename "${prompt_file}")"
+done
+
 mkdir -p "${HOME}/.pi/agent/themes"
 ln -sf "${REPO_DIR}/themes/zim-flag.json" "${HOME}/.pi/agent/themes/zim-flag.json"
 ln -sf "${REPO_DIR}/themes/nord-night.json" "${HOME}/.pi/agent/themes/nord-night.json"
@@ -35,6 +46,9 @@ echo "  agent-search-tools.ts"
 echo "  plan-gate.ts"
 echo "  cosplay.ts"
 echo "  themed-ui/"
+echo "  subagent/"
+echo "  agents/{scout,researcher,planner,worker,reviewer,tester}.md"
+echo "  prompts/{implement,scout-and-plan,implement-and-review,research-and-plan,verify}.md"
 echo "  themes/{zim-flag,nord-night,everforest-dark,pi-blueprint,tokyo-night}.json"
 echo
 echo "Optional: copy ${REPO_DIR}/cosplay.sample.json to ~/.pi/agent/cosplay.json and customize presets."
