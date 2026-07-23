@@ -48,7 +48,9 @@ function sleep(ms: number): Promise<void> {
 }
 
 function stripHtml(html: string): string {
-	return decodeHtmlEntities(html.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+	return decodeHtmlEntities(html.replace(/<[^>]+>/g, ""))
+		.replace(/\s+/g, " ")
+		.trim();
 }
 
 function decodeHtmlEntities(text: string): string {
@@ -126,8 +128,24 @@ function parseTextMatches(output: string, limit: number): RepoTextMatch[] {
 		.slice(0, limit);
 }
 
-function runSearchRepoText(cwd: string, query: string, pathFilter: string | undefined, maxResults: number): RepoSearchResult {
-	const args = ["--line-number", "--max-columns", "200", "--max-count", String(Math.max(1, maxResults)), "--glob", "!node_modules/**", "--", query, "."];
+function runSearchRepoText(
+	cwd: string,
+	query: string,
+	pathFilter: string | undefined,
+	maxResults: number,
+): RepoSearchResult {
+	const args = [
+		"--line-number",
+		"--max-columns",
+		"200",
+		"--max-count",
+		String(Math.max(1, maxResults)),
+		"--glob",
+		"!node_modules/**",
+		"--",
+		query,
+		".",
+	];
 	const filter = normalizePathFilter(pathFilter);
 	if (filter) {
 		args.splice(args.length - 1, 1, filter);
@@ -150,13 +168,21 @@ function runSearchRepoText(cwd: string, query: string, pathFilter: string | unde
 	const matches = parseTextMatches(rg.output, maxResults);
 	return {
 		ok: matches.length > 0,
-		output: matches.length > 0 ? matches.map((match) => `${match.file}:${match.line ?? "?"}:${match.text}`).join("\n") : "No results found.",
+		output:
+			matches.length > 0
+				? matches.map((match) => `${match.file}:${match.line ?? "?"}:${match.text}`).join("\n")
+				: "No results found.",
 		count: matches.length,
 		matches,
 	};
 }
 
-function runSearchRepoFilename(cwd: string, query: string, pathFilter: string | undefined, maxResults: number): RepoSearchResult {
+function runSearchRepoFilename(
+	cwd: string,
+	query: string,
+	pathFilter: string | undefined,
+	maxResults: number,
+): RepoSearchResult {
 	const filter = normalizePathFilter(pathFilter);
 	const findArgs = [".", "-type", "f"];
 	if (filter) {
@@ -194,7 +220,10 @@ function runSearchRepoFilename(cwd: string, query: string, pathFilter: string | 
 	};
 }
 
-async function performWebSearch(query: string, maxResults: number): Promise<{ ok: boolean; results: WebSearchItem[]; message?: string }> {
+async function performWebSearch(
+	query: string,
+	maxResults: number,
+): Promise<{ ok: boolean; results: WebSearchItem[]; message?: string }> {
 	const elapsed = Date.now() - lastWebSearchAt;
 	if (elapsed < WEB_RATE_LIMIT_MS) await sleep(WEB_RATE_LIMIT_MS - elapsed);
 	lastWebSearchAt = Date.now();
@@ -225,7 +254,13 @@ async function performWebSearch(query: string, maxResults: number): Promise<{ ok
 	}
 }
 
-function performRepoSearch(cwd: string, query: string, searchType: RepoSearchType, pathFilter?: string, maxResults = 10): RepoSearchResult {
+function performRepoSearch(
+	cwd: string,
+	query: string,
+	searchType: RepoSearchType,
+	pathFilter?: string,
+	maxResults = 10,
+): RepoSearchResult {
 	const limit = Math.max(1, Math.min(MAX_REPO_RESULTS, Math.floor(maxResults)));
 	return searchType === "filename"
 		? runSearchRepoFilename(cwd, query, pathFilter, limit)
@@ -235,7 +270,12 @@ function performRepoSearch(cwd: string, query: string, searchType: RepoSearchTyp
 function isLikelyWebQuery(query: string): boolean {
 	const q = query.toLowerCase();
 	if (/\bhttps?:\/\//.test(q)) return true;
-	if (/\b(error|exception|stack trace|docs|documentation|how to|tutorial|guide|why|what is|latest|release notes?)\b/.test(q)) return true;
+	if (
+		/\b(error|exception|stack trace|docs|documentation|how to|tutorial|guide|why|what is|latest|release notes?)\b/.test(
+			q,
+		)
+	)
+		return true;
 	return false;
 }
 
@@ -390,7 +430,10 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 				const query = (textMatch?.[2] ?? fileMatch?.[2] ?? "").trim();
 				const type: RepoSearchType = fileMatch ? "filename" : "text";
 				const result = performRepoSearch(ctx.cwd, query, type);
-				ctx.ui.notify(compactLines(result.output, 14), result.commandError ? "error" : result.ok ? "info" : "warning");
+				ctx.ui.notify(
+					compactLines(result.output, 14),
+					result.commandError ? "error" : result.ok ? "info" : "warning",
+				);
 				return;
 			}
 
@@ -413,7 +456,10 @@ export default function agentSearchTools(pi: ExtensionAPI) {
 			}
 
 			const repoResult = performRepoSearch(ctx.cwd, raw, "text");
-			ctx.ui.notify(compactLines(repoResult.output, 14), repoResult.commandError ? "error" : repoResult.ok ? "info" : "warning");
+			ctx.ui.notify(
+				compactLines(repoResult.output, 14),
+				repoResult.commandError ? "error" : repoResult.ok ? "info" : "warning",
+			);
 		},
 	});
 }

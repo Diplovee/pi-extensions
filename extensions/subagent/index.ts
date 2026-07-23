@@ -117,7 +117,9 @@ function formatToolCall(
 		case "find": {
 			const pattern = (args.pattern || "*") as string;
 			const rawPath = (args.path || ".") as string;
-			return themeFg("muted", "find ") + themeFg("accent", pattern) + themeFg("dim", ` in ${shortenPath(rawPath)}`);
+			return (
+				themeFg("muted", "find ") + themeFg("accent", pattern) + themeFg("dim", ` in ${shortenPath(rawPath)}`)
+			);
 		}
 		case "grep": {
 			const pattern = (args.pattern || "") as string;
@@ -209,7 +211,8 @@ function getDisplayItems(messages: Message[]): DisplayItem[] {
 		if (msg.role === "assistant") {
 			for (const part of msg.content) {
 				if (part.type === "text") items.push({ type: "text", text: part.text });
-				else if (part.type === "toolCall") items.push({ type: "toolCall", name: part.name, args: part.arguments });
+				else if (part.type === "toolCall")
+					items.push({ type: "toolCall", name: part.name, args: part.arguments });
 			}
 		}
 	}
@@ -246,20 +249,29 @@ async function writePromptToTempFile(agentName: string, prompt: string): Promise
 	return { dir: tmpDir, filePath };
 }
 
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
+function getPiInvocation(args: string[]): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
+	const env = { ...process.env };
+	const gauPiCli = env.GAU_PI_CLI?.trim();
+	if (gauPiCli) {
+		return {
+			command: process.execPath,
+			args: [gauPiCli, ...args],
+			env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
+		};
+	}
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
 	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
+		return { command: process.execPath, args: [currentScript, ...args], env };
 	}
 
 	const execName = path.basename(process.execPath).toLowerCase();
 	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
 	if (!isGenericRuntime) {
-		return { command: process.execPath, args };
+		return { command: process.execPath, args, env };
 	}
 
-	return { command: "pi", args };
+	return { command: "pi", args, env };
 }
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
@@ -270,6 +282,7 @@ async function runSingleAgent(
 	agentName: string,
 	task: string,
 	cwd: string | undefined,
+	modelOverride: string | null | undefined,
 	step: number | undefined,
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
@@ -292,9 +305,12 @@ async function runSingleAgent(
 	}
 
 	// Child agents must never recursively spawn more agents. Their role frontmatter
-// controls the positive tool allowlist; this denylist is a defense-in-depth guard.
-const args: string[] = ["--mode", "json", "-p", "--no-session", "--exclude-tools", "subagent"];
-	if (agent.model) args.push("--model", agent.model);
+	// controls the positive tool allowlist; this denylist is a defense-in-depth guard.
+	const args: string[] = ["--mode", "json", "-p", "--no-session", "--exclude-tools", "subagent,gau_subagent"];
+	// undefined means use the role's model; null explicitly means use the
+	// child's configured default (used when a requested vision model is absent).
+	const model = modelOverride === undefined ? agent.model : modelOverride;
+	if (model) args.push("--model", model);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpPromptDir: string | null = null;
@@ -308,7 +324,7 @@ const args: string[] = ["--mode", "json", "-p", "--no-session", "--exclude-tools
 		messages: [],
 		stderr: "",
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
-		model: agent.model,
+		model,
 		step,
 	};
 
@@ -336,6 +352,7 @@ const args: string[] = ["--mode", "json", "-p", "--no-session", "--exclude-tools
 			const invocation = getPiInvocation(args);
 			const proc = spawn(invocation.command, invocation.args, {
 				cwd: cwd ?? defaultCwd,
+				env: invocation.env,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
 			});
@@ -433,12 +450,18 @@ const args: string[] = ["--mode", "json", "-p", "--no-session", "--exclude-tools
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task to delegate to the agent" }),
+	vision: Type.Optional(
+		Type.Boolean({ description: "Use a vision-capable model for image-file tasks when available" }),
+	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 });
 
 const ChainItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task with optional {previous} placeholder for prior output" }),
+	vision: Type.Optional(
+		Type.Boolean({ description: "Use a vision-capable model for image-file tasks when available" }),
+	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
 });
 
@@ -450,6 +473,9 @@ const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
 const SubagentParams = Type.Object({
 	agent: Type.Optional(Type.String({ description: "Name of the agent to invoke (for single mode)" })),
 	task: Type.Optional(Type.String({ description: "Task to delegate (for single mode)" })),
+	vision: Type.Optional(
+		Type.Boolean({ description: "Use a vision-capable model for image-file tasks when available" }),
+	),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Array of {agent, task} for parallel execution" })),
 	chain: Type.Optional(Type.Array(ChainItem, { description: "Array of {agent, task} for sequential execution" })),
 	agentScope: Type.Optional(AgentScopeSchema),
@@ -469,10 +495,12 @@ export default function (pi: ExtensionAPI) {
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To enable project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
-		promptSnippet: "Delegate research, planning, implementation, review, or testing to an isolated specialist agent",
+		promptSnippet:
+			"Delegate research, planning, implementation, review, or testing to an isolated specialist agent",
 		promptGuidelines: [
 			"Use subagent when the user asks to use an agent, delegate work, research deeply, inspect a codebase, review changes, or verify tests.",
 			"Use parallel subagent tasks for independent read-only investigations; never run concurrent writers in the same working tree.",
+			"Set vision=true for image-file tasks and include the image path in the task; the tool selects GPT-5.4 when configured, otherwise the child uses the configured default model.",
 			"Use scout/researcher/planner before worker for non-trivial changes, and use reviewer/tester after implementation.",
 			"Use agentScope=both when the user's current project has specialized local agents; project-local agents require trust approval.",
 		],
@@ -483,6 +511,14 @@ export default function (pi: ExtensionAPI) {
 			const discovery = discoverAgents(ctx.cwd, agentScope);
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
+			const visionModel = (() => {
+				const model = ctx.modelRegistry.find("openai-codex", "gpt-5.4");
+				return model && ctx.modelRegistry.hasConfiguredAuth(model) ? "openai-codex/gpt-5.4" : undefined;
+			})();
+			const modelFor = (vision: boolean | undefined): string | null | undefined => {
+				if (!vision) return undefined;
+				return visionModel ?? null;
+			};
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -497,6 +533,23 @@ export default function (pi: ExtensionAPI) {
 					projectAgentsDir: discovery.projectAgentsDir,
 					results,
 				});
+
+			const visionRequested =
+				Boolean(params.vision) ||
+				Boolean(params.tasks?.some((task) => task.vision)) ||
+				Boolean(params.chain?.some((step) => step.vision));
+			if (visionRequested && !visionModel) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Vision task canceled: authenticated openai-codex/gpt-5.4 is not available in Pi.",
+						},
+					],
+					details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+					isError: true,
+				};
+			}
 
 			if (modeCount !== 1) {
 				const available = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
@@ -528,7 +581,12 @@ export default function (pi: ExtensionAPI) {
 					// explicit confirmProjectAgents: false override in those modes.
 					if (!ctx.hasUI)
 						return {
-							content: [{ type: "text", text: "Canceled: project-local agents require interactive approval (or confirmProjectAgents: false)." }],
+							content: [
+								{
+									type: "text",
+									text: "Canceled: project-local agents require interactive approval (or confirmProjectAgents: false).",
+								},
+							],
 							details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
 						};
 					const ok = await ctx.ui.confirm(
@@ -572,6 +630,7 @@ export default function (pi: ExtensionAPI) {
 						step.agent,
 						taskWithContext,
 						step.cwd,
+						modelFor(step.vision),
 						i + 1,
 						signal,
 						chainUpdate,
@@ -583,7 +642,9 @@ export default function (pi: ExtensionAPI) {
 					if (isError) {
 						const errorMsg = getResultOutput(result);
 						return {
-							content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` }],
+							content: [
+								{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` },
+							],
 							details: makeDetails("chain")(results),
 							isError: true,
 						};
@@ -591,7 +652,9 @@ export default function (pi: ExtensionAPI) {
 					previousOutput = getFinalOutput(result.messages);
 				}
 				return {
-					content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }],
+					content: [
+						{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" },
+					],
 					details: makeDetails("chain")(results),
 				};
 			}
@@ -619,8 +682,17 @@ export default function (pi: ExtensionAPI) {
 						task: params.tasks[i].task,
 						exitCode: -1, // -1 = still running
 						messages: [],
+						model: modelFor(params.tasks[i].vision),
 						stderr: "",
-						usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							cost: 0,
+							contextTokens: 0,
+							turns: 0,
+						},
 					};
 				}
 
@@ -630,7 +702,10 @@ export default function (pi: ExtensionAPI) {
 						const done = allResults.filter((r) => r.exitCode !== -1).length;
 						onUpdate({
 							content: [
-								{ type: "text", text: `Parallel: ${done}/${allResults.length} done, ${running} running...` },
+								{
+									type: "text",
+									text: `Parallel: ${done}/${allResults.length} done, ${running} running...`,
+								},
 							],
 							details: makeDetails("parallel")([...allResults]),
 						});
@@ -644,6 +719,7 @@ export default function (pi: ExtensionAPI) {
 						t.agent,
 						t.task,
 						t.cwd,
+						modelFor(t.vision),
 						undefined,
 						signal,
 						// Per-task update callback
@@ -686,6 +762,7 @@ export default function (pi: ExtensionAPI) {
 					params.agent,
 					params.task,
 					params.cwd,
+					modelFor(params.vision),
 					undefined,
 					signal,
 					onUpdate,
@@ -808,7 +885,8 @@ export default function (pi: ExtensionAPI) {
 							if (item.type === "toolCall")
 								container.addChild(
 									new Text(
-										theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme)),
+										theme.fg("muted", "→ ") +
+											formatToolCall(item.name, item.args, theme.fg.bind(theme)),
 										0,
 										0,
 									),
@@ -833,7 +911,8 @@ export default function (pi: ExtensionAPI) {
 				else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
 				else {
 					text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
-					if (displayItems.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+					if (displayItems.length > COLLAPSED_ITEM_COUNT)
+						text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
 				}
 				const usageStr = formatUsageStats(r.usage, r.model);
 				if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
@@ -855,7 +934,8 @@ export default function (pi: ExtensionAPI) {
 
 			if (details.mode === "chain") {
 				const successCount = details.results.filter((r) => r.exitCode === 0).length;
-				const icon = successCount === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
+				const icon =
+					successCount === details.results.length ? theme.fg("success", "✓") : theme.fg("error", "✗");
 
 				if (expanded) {
 					const container = new Container();
@@ -890,7 +970,8 @@ export default function (pi: ExtensionAPI) {
 							if (item.type === "toolCall") {
 								container.addChild(
 									new Text(
-										theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme)),
+										theme.fg("muted", "→ ") +
+											formatToolCall(item.name, item.args, theme.fg.bind(theme)),
 										0,
 										0,
 									),
@@ -975,7 +1056,8 @@ export default function (pi: ExtensionAPI) {
 							if (item.type === "toolCall") {
 								container.addChild(
 									new Text(
-										theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme)),
+										theme.fg("muted", "→ ") +
+											formatToolCall(item.name, item.args, theme.fg.bind(theme)),
 										0,
 										0,
 									),

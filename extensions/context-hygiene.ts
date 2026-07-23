@@ -194,12 +194,7 @@ function scoreNoise(ctx: ExtensionContext): number {
 		.map((entry) => entry.message);
 
 	let score = 0;
-	const normalized = recentMessages.map((message) =>
-		getText(message)
-			.toLowerCase()
-			.replace(/\s+/g, " ")
-			.trim(),
-	);
+	const normalized = recentMessages.map((message) => getText(message).toLowerCase().replace(/\s+/g, " ").trim());
 
 	const duplicates = new Map<string, number>();
 	for (const text of normalized) {
@@ -301,10 +296,20 @@ export default function contextHygiene(pi: ExtensionAPI) {
 		ctx.compact({
 			customInstructions: buildCompactInstructions(reason),
 			onComplete: () => {
-				if (ctx.hasUI) ctx.ui.notify(isTerseEnabled(ctx.cwd) ? `Compacted: ${reason}` : `Context compacted: ${reason}`, "info");
+				if (ctx.hasUI)
+					ctx.ui.notify(
+						isTerseEnabled(ctx.cwd) ? `Compacted: ${reason}` : `Context compacted: ${reason}`,
+						"info",
+					);
 			},
 			onError: (error) => {
-				if (ctx.hasUI) ctx.ui.notify(isTerseEnabled(ctx.cwd) ? `Compact failed: ${error.message}` : `Compaction failed: ${error.message}`, "error");
+				if (ctx.hasUI)
+					ctx.ui.notify(
+						isTerseEnabled(ctx.cwd)
+							? `Compact failed: ${error.message}`
+							: `Compaction failed: ${error.message}`,
+						"error",
+					);
 			},
 		});
 	};
@@ -340,7 +345,12 @@ export default function contextHygiene(pi: ExtensionAPI) {
 			const now = Date.now();
 			const lastWarning = state.lastWarningAt ? new Date(state.lastWarningAt).getTime() : 0;
 			if (now - lastWarning > 1000 * 60 * 5 && ctx.hasUI) {
-				ctx.ui.notify(isTerseEnabled(ctx.cwd) ? `Ctx ${percent}%, noise ${noise}` : `Context rising: ${percent}% used, noise score ${noise}`, "warning");
+				ctx.ui.notify(
+					isTerseEnabled(ctx.cwd)
+						? `Ctx ${percent}%, noise ${noise}`
+						: `Context rising: ${percent}% used, noise score ${noise}`,
+					"warning",
+				);
 				state.lastWarningAt = new Date(now).toISOString();
 			}
 		}
@@ -448,7 +458,9 @@ export default function contextHygiene(pi: ExtensionAPI) {
 	pi.registerCommand("hygiene", {
 		description: "Manage context hygiene. Usage: /hygiene [show|on|off|toggle|compact|reset]",
 		getArgumentCompletions: (prefix) => {
-			const options = ["show", "on", "off", "toggle", "compact", "reset"].filter((value) => value.startsWith(prefix));
+			const options = ["show", "on", "off", "toggle", "compact", "reset"].filter((value) =>
+				value.startsWith(prefix),
+			);
 			return options.length > 0 ? options.map((value) => ({ value, label: value })) : null;
 		},
 		handler: async (args, ctx) => {
@@ -475,7 +487,12 @@ export default function contextHygiene(pi: ExtensionAPI) {
 				saveConfig(ctx.cwd, { enabled: state.enabled });
 				persist(ctx.cwd);
 				refresh(ctx);
-				ctx.ui.notify(isTerseEnabled(ctx.cwd) ? `Hygiene ${state.enabled ? "on" : "off"}` : `Context hygiene ${state.enabled ? "enabled" : "disabled"}`, "info");
+				ctx.ui.notify(
+					isTerseEnabled(ctx.cwd)
+						? `Hygiene ${state.enabled ? "on" : "off"}`
+						: `Context hygiene ${state.enabled ? "enabled" : "disabled"}`,
+					"info",
+				);
 				return;
 			}
 
@@ -484,7 +501,12 @@ export default function contextHygiene(pi: ExtensionAPI) {
 				saveConfig(ctx.cwd, { enabled: state.enabled });
 				persist(ctx.cwd);
 				refresh(ctx);
-				ctx.ui.notify(isTerseEnabled(ctx.cwd) ? `Hygiene ${state.enabled ? "on" : "off"}` : `Context hygiene ${state.enabled ? "enabled" : "disabled"}`, "info");
+				ctx.ui.notify(
+					isTerseEnabled(ctx.cwd)
+						? `Hygiene ${state.enabled ? "on" : "off"}`
+						: `Context hygiene ${state.enabled ? "enabled" : "disabled"}`,
+					"info",
+				);
 				return;
 			}
 

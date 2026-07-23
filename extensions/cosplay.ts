@@ -98,17 +98,16 @@ function loadPresets(cwd: string): PresetMap {
 
 function derivePersonaName(prompt: string): string {
 	const normalized = prompt.replace(/^['"`]|['"`]$/g, "").trim();
-	const patterns = [
-		/^you(?:'re| are)\s+([^,.!\n]+)/i,
-		/^act as\s+([^,.!\n]+)/i,
-		/^be\s+([^,.!\n]+)/i,
-	];
+	const patterns = [/^you(?:'re| are)\s+([^,.!\n]+)/i, /^act as\s+([^,.!\n]+)/i, /^be\s+([^,.!\n]+)/i];
 
 	const cleanup = (value: string): string => {
 		let result = value.trim();
 		result = result.replace(/^(an?|the)\s+/i, "");
 		result = result.replace(/\s+(an?|the)\s+.+$/i, "");
-		result = result.replace(/\s+(engineer|developer|reviewer|designer|assistant|coder|programmer|architect|friend|pirate|mentor|consultant).*$/i, "");
+		result = result.replace(
+			/\s+(engineer|developer|reviewer|designer|assistant|coder|programmer|architect|friend|pirate|mentor|consultant).*$/i,
+			"",
+		);
 		const words = result.split(/\s+/).filter(Boolean);
 		if (words.length === 0) return "custom";
 		if (words.length === 1) return words[0];
@@ -140,8 +139,8 @@ function updateStatus(ctx: ExtensionContext, state: CosplayState) {
 		"cosplay-dashboard",
 		label
 			? [
-				`${ctx.ui.theme.fg("accent", "COSPLAY")} ${ctx.ui.theme.fg("muted", "active:")} ${ctx.ui.theme.bold(ctx.ui.theme.fg("accent", label))}`,
-			]
+					`${ctx.ui.theme.fg("accent", "COSPLAY")} ${ctx.ui.theme.fg("muted", "active:")} ${ctx.ui.theme.bold(ctx.ui.theme.fg("accent", label))}`,
+				]
 			: undefined,
 	);
 }
@@ -289,7 +288,10 @@ export default function cosplayExtension(pi: ExtensionAPI) {
 
 		const lastStateEntry = ctx.sessionManager
 			.getEntries()
-			.filter((entry: { type: string; customType?: string }) => entry.type === "custom" && entry.customType === "cosplay-state")
+			.filter(
+				(entry: { type: string; customType?: string }) =>
+					entry.type === "custom" && entry.customType === "cosplay-state",
+			)
 			.pop() as { data?: CosplayState } | undefined;
 
 		if (lastStateEntry?.data) {

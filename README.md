@@ -28,6 +28,9 @@ Reusable PI extensions for token-efficient memory, phased execution, dashboard v
 - `extensions/subagent/`
   Global subagent orchestration with isolated child Pi processes, single/parallel/chain modes, bounded concurrency, streamed status, cancellation, and Markdown agent roles.
 
+- `cli/thaplan.mjs`
+  Cross-app plan discovery, list/search/sort, local web browsing, editable Markdown plans, and Pi-powered Markdown + HTML plan generation. Its no-argument picker uses the same `@clack/prompts` interaction style as SHG.
+
 - `themes/*.json`
   Five custom themes: `zim-flag`, `nord-night`, `everforest-dark`, `pi-blueprint`, and `tokyo-night`.
 
@@ -37,11 +40,11 @@ The subagent extension is designed for global reuse across projects. It discover
 
 The registered `subagent` tool supports exactly one execution mode per call:
 
-- Single: `{ agent, task }`
-- Parallel: `{ tasks: [{ agent, task }] }` (maximum 8 tasks, 4 concurrent)
-- Chain: `{ chain: [{ agent, task }] }` with `{previous}` handoffs
+- Single: `{ agent, task, vision? }`
+- Parallel: `{ tasks: [{ agent, task, vision? }] }` (maximum 8 tasks, 4 concurrent)
+- Chain: `{ chain: [{ agent, task, vision? }] }` with `{previous}` handoffs
 
-Built-in roles are `scout`, `researcher`, `planner`, `worker`, `reviewer`, and `tester`. Role files use YAML frontmatter to define least-privilege tools. Models are intentionally omitted by default so the extension uses each user's configured Pi model; add a model only when that alias is known to exist.
+Built-in roles are `scout`, `researcher`, `planner`, `worker`, `reviewer`, `tester`, and `thaplan`. Role files use YAML frontmatter to define least-privilege tools and optional model routing. The token-heavy, lower-judgment `scout`, `researcher`, and `thaplan` roles use `opencode/deepseek-v4-flash-free`; `planner`, `worker`, `reviewer`, and `tester` inherit the main agent's configured model so higher-judgment work stays on the stronger controller model. For image-file tasks, pass `vision: true` and include the image path in the task; vision is allowed only when authenticated `openai-codex/gpt-5.4` is available in Pi. It never routes vision work through OpenCode GPT.
 
 Safety defaults:
 
@@ -52,6 +55,21 @@ Safety defaults:
 - Abort signals terminate child processes and clean temporary prompt files.
 
 Workflow prompt templates include `/implement`, `/scout-and-plan`, `/research-and-plan`, `/implement-and-review`, and `/verify`.
+
+## thaplan CLI
+
+Install with `./install.sh`, then use the global `thaplan` command:
+
+```bash
+thaplan                         # choose repositories and an action interactively
+thaplan list --root /path/to/repository --sort modified
+thaplan serve --root /path/to/repository --port 8910
+thaplan open apps/pos/docs/plans/example --root /path/to/repository
+thaplan generate --root /path/to/repository --name inventory-v2 --prompt "Plan the inventory redesign"
+thaplan generate --root /path/to/repository --name dashboard --reference-image /tmp/reference.png
+```
+
+The CLI discovers nested `docs/plans` directories, pairs files by basename, and keeps plans in their owning app/repository. The browser provides search, sorting, selectable plan cards, rendered Markdown by default, a Raw Markdown/Edit view, optional HTML visualization, save-to-disk editing, and back navigation. Saving writes the canonical `.md` file atomically, so the next agent run sees the user's edits. `thaplan generate` uses DeepSeek Free for document generation; when `--reference-image` is supplied, only authenticated `openai-codex/gpt-5.4` analyzes the image first.
 
 ## Phase Tracker
 
@@ -82,14 +100,14 @@ Workflow prompt templates include `/implement`, `/scout-and-plan`, `/research-an
 ### Tools
 
 - `web_search`
-  - `query` — search string
-  - `max_results` — optional result cap
+    - `query` — search string
+    - `max_results` — optional result cap
 
 - `search_repo`
-  - `query` — text, symbol, or filename to find
-  - `search_type` — `text` or `filename`
-  - `path_filter` — optional repo subpath filter
-  - `max_results` — optional result cap
+    - `query` — text, symbol, or filename to find
+    - `search_type` — `text` or `filename`
+    - `path_filter` — optional repo subpath filter
+    - `max_results` — optional result cap
 
 ### Notes
 
@@ -119,10 +137,10 @@ Example:
 
 ```json
 {
-  "tino": {
-    "prompt": "You're Tino, an engineer. Stay fully in character. Be direct, competent, practical, and concise."
-  },
-  "reviewer": "You're a blunt senior reviewer. Stay fully in character and keep replies concise."
+	"tino": {
+		"prompt": "You're Tino, an engineer. Stay fully in character. Be direct, competent, practical, and concise."
+	},
+	"reviewer": "You're a blunt senior reviewer. Stay fully in character and keep replies concise."
 }
 ```
 

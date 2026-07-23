@@ -41,7 +41,10 @@ export default function terseMode(pi: ExtensionAPI) {
 
 	const refresh = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		ctx.ui.setStatus("terse-mode", ctx.ui.theme.fg(enabled ? "success" : "dim", enabled ? "terse:on" : "terse:off"));
+		ctx.ui.setStatus(
+			"terse-mode",
+			ctx.ui.theme.fg(enabled ? "success" : "dim", enabled ? "terse:on" : "terse:off"),
+		);
 	};
 
 	pi.on("session_start", async (_event, ctx) => {

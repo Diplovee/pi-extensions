@@ -122,10 +122,10 @@ export default function planGateExtension(pi: ExtensionAPI) {
 			"plan-gate",
 			state.planningMode
 				? [
-					ctx.ui.theme.fg("warning", "Plan Mode: ON (coding blocked)"),
-					ctx.ui.theme.fg("muted", state.objective ? `objective: ${state.objective}` : "objective: none"),
-					ctx.ui.theme.fg("dim", "Use /plan go when ready to code."),
-				]
+						ctx.ui.theme.fg("warning", "Plan Mode: ON (coding blocked)"),
+						ctx.ui.theme.fg("muted", state.objective ? `objective: ${state.objective}` : "objective: none"),
+						ctx.ui.theme.fg("dim", "Use /plan go when ready to code."),
+					]
 				: undefined,
 			{ placement: "belowEditor" },
 		);

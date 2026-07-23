@@ -75,7 +75,9 @@ function normalizeWhitespace(text: string): string {
 }
 
 function normalizeForKey(text: string): string {
-	return normalizeWhitespace(text).toLowerCase().replace(/[^\w\s/-]+/g, "");
+	return normalizeWhitespace(text)
+		.toLowerCase()
+		.replace(/[^\w\s/-]+/g, "");
 }
 
 function trimSentence(text: string, maxChars: number): string {
@@ -101,7 +103,10 @@ function getTextFromMessage(message: AgentMessage): string {
 	if (message.role === "toolResult") {
 		return normalizeWhitespace(
 			Array.isArray(message.content)
-				? message.content.filter((item): item is TextContent => item.type === "text").map((item) => item.text).join("\n")
+				? message.content
+						.filter((item): item is TextContent => item.type === "text")
+						.map((item) => item.text)
+						.join("\n")
 				: "",
 		);
 	}
@@ -368,10 +373,17 @@ function saveMemoryFile(cwd: string, state: AutoMemoryState): void {
 	writeFileSync(memoryFile, renderMemoryMarkdown(state), "utf-8");
 }
 
-function buildMemoryLines(state: AutoMemoryState, theme: Theme, contextPercent: number | null, terse: boolean): string[] {
+function buildMemoryLines(
+	state: AutoMemoryState,
+	theme: Theme,
+	contextPercent: number | null,
+	terse: boolean,
+): string[] {
 	const lines: string[] = [];
 	const statusColor = state.enabled ? "success" : "warning";
-	lines.push(`${theme.fg(statusColor, state.enabled ? (terse ? "Mem: ON" : "Memory: ON") : terse ? "Mem: OFF" : "Memory: OFF")}`);
+	lines.push(
+		`${theme.fg(statusColor, state.enabled ? (terse ? "Mem: ON" : "Memory: ON") : terse ? "Mem: OFF" : "Memory: OFF")}`,
+	);
 
 	const stats = [
 		`${state.preferences.length} prefs`,
@@ -469,7 +481,10 @@ export default function autoMemoryExtension(pi: ExtensionAPI) {
 	const refreshWidget = (ctx: ExtensionContext): void => {
 		if (!ctx.hasUI || !state) return;
 		ctx.ui.setWidget("auto-memory", undefined);
-		ctx.ui.setStatus("auto-memory", ctx.ui.theme.fg(state.enabled ? "success" : "warning", state.enabled ? "mem:on" : "mem:off"));
+		ctx.ui.setStatus(
+			"auto-memory",
+			ctx.ui.theme.fg(state.enabled ? "success" : "warning", state.enabled ? "mem:on" : "mem:off"),
+		);
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -515,7 +530,12 @@ export default function autoMemoryExtension(pi: ExtensionAPI) {
 					state.enabled = !state.enabled;
 					saveConfig(ctx.cwd, { enabled: state.enabled });
 					persist(ctx.cwd);
-					ctx.ui.notify(isTerseEnabled(ctx.cwd) ? `Memory ${state.enabled ? "on" : "off"}` : `Auto memory ${state.enabled ? "enabled" : "disabled"}`, "info");
+					ctx.ui.notify(
+						isTerseEnabled(ctx.cwd)
+							? `Memory ${state.enabled ? "on" : "off"}`
+							: `Auto memory ${state.enabled ? "enabled" : "disabled"}`,
+						"info",
+					);
 					break;
 				case "clear":
 					state = createEmptyState(state.enabled);
@@ -550,7 +570,9 @@ export default function autoMemoryExtension(pi: ExtensionAPI) {
 			refreshWidget(ctx);
 		},
 		getArgumentCompletions: (prefix) => {
-			const options = ["on", "off", "toggle", "show", "sync", "clear"].filter((value) => value.startsWith(prefix));
+			const options = ["on", "off", "toggle", "show", "sync", "clear"].filter((value) =>
+				value.startsWith(prefix),
+			);
 			return options.length > 0 ? options.map((value) => ({ value, label: value })) : null;
 		},
 	});

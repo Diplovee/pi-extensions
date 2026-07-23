@@ -1,6 +1,7 @@
 ---
 description: Researcher gathers cited evidence, planner turns it into an implementation plan
 ---
+
 Use the subagent tool with the chain parameter to execute this workflow:
 
 1. First, use the "researcher" agent to investigate: $@

@@ -93,7 +93,12 @@ function normalizeLabel(value: string | undefined, fallback: string): string {
 	return value.replace(/_/g, " ").trim() || fallback;
 }
 
-function kv(theme: { fg: (color: string, text: string) => string }, label: string, value: string, labelWidth = 8): string {
+function kv(
+	theme: { fg: (color: string, text: string) => string },
+	label: string,
+	value: string,
+	labelWidth = 8,
+): string {
 	return `${theme.fg("dim", `${label}:`.padEnd(labelWidth + 1, " "))}${value}`;
 }
 
@@ -107,7 +112,8 @@ function statusColor(value: string | undefined): string {
 	const normalized = (value ?? "").toLowerCase();
 	if (normalized.includes("pass") || normalized.includes("done") || normalized.includes("approved")) return "success";
 	if (normalized.includes("fail") || normalized.includes("reject") || normalized.includes("error")) return "error";
-	if (normalized.includes("review") || normalized.includes("await") || normalized.includes("pending")) return "warning";
+	if (normalized.includes("review") || normalized.includes("await") || normalized.includes("pending"))
+		return "warning";
 	return "muted";
 }
 
@@ -183,7 +189,9 @@ export default function dashboardUI(pi: ExtensionAPI) {
 						? truncateToWidth(hygiene.lastCompactReason, Math.max(10, leftWidth - 10), "...")
 						: theme.fg("muted", "none");
 
-					const phaseName = currentPhase ? truncateToWidth(currentPhase.name, Math.max(10, rightWidth - 10), "...") : theme.fg("muted", "none");
+					const phaseName = currentPhase
+						? truncateToWidth(currentPhase.name, Math.max(10, rightWidth - 10), "...")
+						: theme.fg("muted", "none");
 					const phaseState = normalizeLabel(currentPhase?.status, "none");
 					const testsState = normalizeLabel(currentPhase?.testStatus, "?");
 					const reviewState = normalizeLabel(currentPhase?.reviewStatus, "?");
@@ -224,13 +232,23 @@ export default function dashboardUI(pi: ExtensionAPI) {
 					lines.push(theme.fg("borderMuted", `┌${"─".repeat(inner)}┐`));
 					lines.push(
 						theme.fg("borderMuted", "│ ") +
-							shortLine(theme.fg("accent", "PI Dashboard"), theme.fg("dim", enabled ? "active" : "off"), inner) +
+							shortLine(
+								theme.fg("accent", "PI Dashboard"),
+								theme.fg("dim", enabled ? "active" : "off"),
+								inner,
+							) +
 							theme.fg("borderMuted", " │"),
 					);
 					lines.push(theme.fg("borderMuted", `├${"─".repeat(inner)}┤`));
 
 					if (!twoColumn) {
-						const single = [...left, "", theme.fg("borderMuted", "-".repeat(Math.max(8, inner - 2))), "", ...right];
+						const single = [
+							...left,
+							"",
+							theme.fg("borderMuted", "-".repeat(Math.max(8, inner - 2))),
+							"",
+							...right,
+						];
 						for (const row of single) {
 							const cell = truncateToWidth(row, inner, "");
 							const pad = " ".repeat(Math.max(0, inner - visibleWidth(cell)));
