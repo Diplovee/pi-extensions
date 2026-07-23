@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import * as p from "@clack/prompts";
 import chalk from "chalk";
 import { fileURLToPath } from "node:url";
-import { discoverPlans, readPlanDetail, searchPlans, serializePlan, sortPlans, updatePlanStatus } from "./thaplan-lib.mjs";
+import { discoverPlans, readPlanDetail, renderMarkdownToTerminal, searchPlans, serializePlan, sortPlans, updatePlanStatus } from "./thaplan-lib.mjs";
 
 const CLI_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = 8910;
@@ -21,6 +21,7 @@ function usage() {
 Usage:
   thaplan                         interactive repository/action picker
   thaplan list [--root PATH] [--search TEXT] [--sort modified|new|old|title|path] [--json] [--no-cache]
+  thaplan read PLAN_ID [--root PATH] [--no-cache]
   thaplan serve [--root PATH] [--port PORT] [--search TEXT] [--no-cache]
   thaplan open [PLAN_ID] [--root PATH] [--port PORT] [--no-cache]
   thaplan generate --name SLUG [--root PATH] [--prompt TEXT] [--reference-image PATH]
@@ -415,6 +416,17 @@ function generateCommand(options, positionals) {
 	serveCommand({ ...options, roots: options.roots || [root], port }, planId);
 }
 
+function readCommand(options, positionals) {
+	const planId = positionals[0];
+	if (!planId) throw new Error("read requires a PLAN_ID, e.g. thaplan read docs/plans/thaplan");
+	const plans = planRows(options);
+	const plan = plans.find((p) => p.id === planId);
+	if (!plan) throw new Error(`Plan not found: ${planId}`);
+	if (!plan.markdownPath) throw new Error(`Plan has no Markdown source: ${planId}`);
+	const detail = readPlanDetail(plan);
+	console.log(renderMarkdownToTerminal(detail.markdown));
+}
+
 const { positionals, options } = parseArgs(process.argv.slice(2));
 
 async function main() {
@@ -436,9 +448,10 @@ async function main() {
 		if (!command && process.stdin.isTTY && process.stdout.isTTY) return interactiveCommand(options);
 		if (!command || command === "list") return listCommand(options);
 		if (command === "serve") return serveCommand(options);
+		if (command === "read") return readCommand(options, positionals.slice(1));
 		if (command === "open") return serveCommand(options, positionals[1]);
 		// generate auto-starts the server, so don't exit after it
-	if (command === "generate") { generateCommand(options, positionals.slice(1)); return; }
+		if (command === "generate") { generateCommand(options, positionals.slice(1)); return; }
 		throw new Error(`Unknown command: ${command}`);
 	} catch (error) {
 		console.error(`thaplan: ${error.message}`);

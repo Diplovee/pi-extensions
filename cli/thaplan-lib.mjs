@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import chalk from "chalk";
 
 const IGNORED_DIRECTORIES = new Set([
 	".git",
@@ -328,4 +329,127 @@ function writePlanFileAtomic(filePath, content) {
 	fs.writeFileSync(temporaryPath, content, { encoding: "utf8", mode: 0o600 });
 	fs.renameSync(temporaryPath, filePath);
 	return fs.statSync(filePath).mtimeMs;
+}
+
+export function renderMarkdownToTerminal(markdown) {
+	// Strip frontmatter before processing
+	const cleaned = String(markdown || "").replace(/^---[\s\S]*?\n---\s*\n?/, "");
+	const lines = cleaned.split("\n");
+	const output = [];
+	let inCodeBlock = false;
+	let inParagraph = false;
+	let codeLines = [];
+
+	const flushParagraph = () => {
+		if (inParagraph) {
+			output.push("");
+			inParagraph = false;
+		}
+	};
+
+	for (const line of lines) {
+		// Code blocks
+		if (line.startsWith("```")) {
+			flushParagraph();
+			if (inCodeBlock) {
+				output.push(chalk.bgHex("#292929").hex("#f5f5f5")(` ${codeLines.join("\n")} `));
+				codeLines = [];
+				inCodeBlock = false;
+				output.push("");
+			} else {
+				inCodeBlock = true;
+			}
+			continue;
+		}
+		if (inCodeBlock) {
+			codeLines.push(line);
+			continue;
+		}
+
+		// Empty line
+		if (!line.trim()) {
+			flushParagraph();
+			continue;
+		}
+
+		// Headings
+		const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
+		if (headingMatch) {
+			flushParagraph();
+			const level = headingMatch[1].length;
+			const text = inlineTerminal(headingMatch[2]);
+			if (level === 1) {
+				output.push(chalk.bold.hex("#262626").underline(text));
+				output.push("");
+			} else if (level === 2) {
+				output.push(chalk.bold.hex("#262626")(text));
+				output.push(chalk.dim("─".repeat(Math.min(48, text.length * 2))));
+			} else {
+				output.push(chalk.bold.hex("#55555d")(text));
+			}
+			continue;
+		}
+
+		// Unordered list
+		const ulMatch = line.match(/^[-*]\s+(.+)$/);
+		if (ulMatch) {
+			flushParagraph();
+			output.push(`  ${chalk.dim("•")} ${inlineTerminal(ulMatch[1])}`);
+			continue;
+		}
+
+		// Ordered list
+		const olMatch = line.match(/^(\d+)\.\s+(.+)$/);
+		if (olMatch) {
+			flushParagraph();
+			output.push(`  ${chalk.dim(olMatch[1] + ".")} ${inlineTerminal(olMatch[2])}`);
+			continue;
+		}
+
+		// Blockquote
+		const bqMatch = line.match(/^>\s?(.*)$/);
+		if (bqMatch) {
+			flushParagraph();
+			output.push(chalk.dim(`│ ${inlineTerminal(bqMatch[1])}`));
+			continue;
+		}
+
+		// Horizontal rule
+		if (/^[-*_]{3,}$/.test(line.trim())) {
+			flushParagraph();
+			output.push(chalk.dim("─".repeat(48)));
+			continue;
+		}
+
+		// Table divider (---|---) — skip
+		if (/^[\s|:]+[-]+[\s|:]+$/.test(line.trim())) {
+			continue;
+		}
+
+		// Table row
+		if (line.trimStart().startsWith("|")) {
+			flushParagraph();
+			const cells = line
+				.split("|")
+				.filter((c) => c.trim())
+				.map((c) => inlineTerminal(c.trim()));
+			output.push(chalk.dim("│ ") + cells.join(chalk.dim(" │ ")) + chalk.dim(" │"));
+			continue;
+		}
+
+		// Plain paragraph line
+		inParagraph = true;
+		output.push(inlineTerminal(line.trim()));
+	}
+
+	flushParagraph();
+	return output.join("\n");
+}
+
+function inlineTerminal(text) {
+	return text
+		.replace(/\*\*(.+?)\*\*/g, (_, m) => chalk.bold(m))
+		.replace(/\*([^*]+)\*/g, (_, m) => chalk.italic(m))
+		.replace(/`([^`]+)`/g, (_, m) => chalk.bgHex("#eee").hex("#262626")(m))
+		.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `${chalk.underline(label)} ${chalk.dim(url)}`);
 }
