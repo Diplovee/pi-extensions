@@ -47,6 +47,6 @@ app: <app or repo name>
 3. Include proper frontmatter with `title`, `status` (start with `draft`), `tags`, and `app`.
 4. Structure the plan with: title, goal, decisions, workflow, architecture, interface, phases, acceptance criteria, risks, open questions.
 5. Use concrete file paths, interfaces, and commands.
-6. Do NOT create HTML files — only the `.md` file.
+6. Only create a paired `.html` visualization if the user explicitly requests one (e.g. "with a visualization", "HTML", "visual"). Otherwise create only the `.md` file.
 
 If the request cannot be completed, explain why instead of creating placeholder files.
