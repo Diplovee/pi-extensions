@@ -127,6 +127,7 @@ function browserHtml(initialSearch = "") {
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>thaplan — plans</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <style>
 :root{color-scheme:light;--paper:#fbfbfa;--ink:#262626;--muted:#8f8f96;--rule:#d8d8dc;--soft:#f1f1f2;--focus:#55555d}
 *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.6 Inter,ui-sans-serif,system-ui,sans-serif}
@@ -257,6 +258,14 @@ function serveCommand(options, initialPlan) {
 			const plan = findPlan(plans, url.searchParams.get("id"));
 			if (!plan?.markdownPath) return send(res, 404, "text/plain", "Markdown plan not found");
 			return send(res, 200, "text/markdown", fs.readFileSync(plan.markdownPath, "utf8"));
+		}
+		if (url.pathname === "/favicon.svg") {
+			const faviconPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "thaplan-favicon.svg");
+			try {
+				return send(res, 200, "image/svg+xml", fs.readFileSync(faviconPath, "utf8"));
+			} catch {
+				return send(res, 404, "text/plain", "Favicon not found");
+			}
 		}
 		if (url.pathname === "/" || url.pathname === "/index.html") {
 			return send(res, 200, "text/html", browserHtml(options.search || ""));
