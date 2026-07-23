@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 const IGNORED_DIRECTORIES = new Set([
@@ -12,6 +13,38 @@ const IGNORED_DIRECTORIES = new Set([
 	"ios",
 	"node_modules",
 ]);
+
+const CACHE_DIR = path.join(os.homedir(), ".local", "share", "thaplan");
+const CACHE_PATH = path.join(CACHE_DIR, "plan-cache.json");
+
+function loadPlanCache() {
+	try {
+		return JSON.parse(fs.readFileSync(CACHE_PATH, "utf8"));
+	} catch {
+		return { version: 1, files: {} };
+	}
+}
+
+function savePlanCache(cache) {
+	try {
+		fs.mkdirSync(CACHE_DIR, { recursive: true });
+		fs.writeFileSync(CACHE_PATH, JSON.stringify(cache), "utf8");
+	} catch {
+		// Non-fatal — cache is a performance optimization
+	}
+}
+
+function findCachedFile(filePath, cache) {
+	const entry = cache.files[filePath];
+	if (!entry) return null;
+	try {
+		const mtime = fs.statSync(filePath).mtimeMs;
+		if (entry.mtime === mtime) return entry.plan;
+	} catch {
+		// File no longer exists
+	}
+	return null;
+}
 
 function humanize(value) {
 	return value
@@ -106,29 +139,48 @@ function firstHeading(markdown) {
 	return markdown.match(/^#\s+(.+)$/m)?.[1]?.trim();
 }
 
-export function pairPlanFiles(files, root = process.cwd()) {
+export function pairPlanFiles(files, root = process.cwd(), cache = null, seenFiles = null) {
 	const pairs = new Map();
 	for (const file of files) {
-		const extension = path.extname(file).toLowerCase();
+		const resolved = path.resolve(file);
+		const extension = path.extname(resolved).toLowerCase();
 		if (extension !== ".md" && extension !== ".html") continue;
-		const stem = path.basename(file, extension);
-		const key = `${path.dirname(file)}\0${stem}`;
-		const current = pairs.get(key) ?? { stem, directory: path.dirname(file) };
-		current[extension === ".md" ? "markdownPath" : "htmlPath"] = path.resolve(file);
+		const stem = path.basename(resolved, extension);
+		const key = `${path.dirname(resolved)}\0${stem}`;
+		const current = pairs.get(key) ?? { stem, directory: path.dirname(resolved) };
+		current[extension === ".md" ? "markdownPath" : "htmlPath"] = resolved;
 		pairs.set(key, current);
+		if (seenFiles) seenFiles.add(resolved);
 	}
 
-	return [...pairs.values()].map((pair) => {
-		const metadata = pair.markdownPath ? readMetadata(pair.markdownPath) : {};
+	const updated = [];
+
+	for (const pair of pairs.values()) {
+		const markdownPath = pair.markdownPath;
+
+		// Try cache for unchanged markdown files
+		let metadata = {};
 		let markdown = "";
-		if (pair.markdownPath) {
+		let usedCache = false;
+
+		if (markdownPath && cache) {
+			const cached = findCachedFile(markdownPath, cache);
+			if (cached) {
+				metadata = cached.metadata;
+				usedCache = true;
+			}
+		}
+
+		if (!usedCache && markdownPath) {
+			metadata = readMetadata(markdownPath);
 			try {
-				markdown = fs.readFileSync(pair.markdownPath, "utf8");
+				markdown = fs.readFileSync(markdownPath, "utf8");
 			} catch {
 				markdown = "";
 			}
 		}
-		const stats = [pair.markdownPath, pair.htmlPath]
+
+		const stats = [markdownPath, pair.htmlPath]
 			.filter(Boolean)
 			.map((file) => fs.statSync(file))
 			.sort((a, b) => b.mtimeMs - a.mtimeMs);
@@ -137,7 +189,8 @@ export function pairPlanFiles(files, root = process.cwd()) {
 		const relativeRoot = normalizePath(path.relative(root, planRoot));
 		const appPath = relativeRoot === "" ? path.basename(root) : relativeRoot;
 		const title = metadata.title || firstHeading(markdown) || humanize(pair.stem);
-		return {
+
+		const plan = {
 			id: normalizePath(path.relative(root, path.join(pair.directory, pair.stem))),
 			stem: pair.stem,
 			title,
@@ -146,22 +199,38 @@ export function pairPlanFiles(files, root = process.cwd()) {
 			app: metadata.app || appPath,
 			directory: pair.directory,
 			relativeDirectory,
-			markdownPath: pair.markdownPath,
+			markdownPath,
 			htmlPath: pair.htmlPath,
-			complete: Boolean(pair.markdownPath && pair.htmlPath),
+			complete: Boolean(markdownPath && pair.htmlPath),
 			updatedAt: stats[0]?.mtimeMs ?? 0,
 			createdAt: Math.min(
-				...[pair.markdownPath, pair.htmlPath]
+				...[markdownPath, pair.htmlPath]
 					.filter(Boolean)
 					.map((file) => fs.statSync(file).birthtimeMs || fs.statSync(file).ctimeMs),
 			),
 		};
-	});
+
+		// Update cache for this markdown file
+		if (markdownPath && cache && !usedCache) {
+			cache.files[markdownPath] = {
+				mtime: stats[0]?.mtimeMs ?? 0,
+				plan: { metadata },
+			};
+		}
+
+		updated.push(plan);
+	}
+
+	return updated;
 }
 
 export function discoverPlans(roots = [process.cwd()], options = {}) {
+	const useCache = options.noCache !== true;
+	const cache = useCache ? loadPlanCache() : null;
 	const requestedRoots = Array.isArray(roots) ? roots : [roots];
+	const seenFiles = cache ? new Set() : null;
 	const plans = [];
+
 	for (const root of requestedRoots) {
 		const resolvedRoot = path.resolve(root);
 		for (const planRoot of discoverPlanRoots(resolvedRoot, options)) {
@@ -174,16 +243,30 @@ export function discoverPlans(roots = [process.cwd()], options = {}) {
 			} catch {
 				continue;
 			}
-			plans.push(...pairPlanFiles(files, resolvedRoot));
+			plans.push(...pairPlanFiles(files, resolvedRoot, cache, seenFiles));
 		}
 	}
+
+	// Remove cache entries for files no longer found on disk
+	if (cache && seenFiles) {
+		for (const key of Object.keys(cache.files)) {
+			if (!seenFiles.has(key)) {
+				delete cache.files[key];
+			}
+		}
+	}
+
 	const seen = new Set();
-	return plans.filter((plan) => {
+	const result = plans.filter((plan) => {
 		const key = `${plan.markdownPath ?? ""}\0${plan.htmlPath ?? ""}`;
 		if (seen.has(key)) return false;
 		seen.add(key);
 		return true;
 	});
+
+	if (cache) savePlanCache(cache);
+
+	return result;
 }
 
 export function searchPlans(plans, query = "") {

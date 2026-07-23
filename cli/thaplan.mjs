@@ -20,13 +20,17 @@ function usage() {
 
 Usage:
   thaplan                         interactive repository/action picker
-  thaplan list [--root PATH] [--search TEXT] [--sort modified|new|old|title|path] [--json]
-  thaplan serve [--root PATH] [--port PORT] [--search TEXT]
-  thaplan open [PLAN_ID] [--root PATH] [--port PORT]
+  thaplan list [--root PATH] [--search TEXT] [--sort modified|new|old|title|path] [--json] [--no-cache]
+  thaplan serve [--root PATH] [--port PORT] [--search TEXT] [--no-cache]
+  thaplan open [PLAN_ID] [--root PATH] [--port PORT] [--no-cache]
   thaplan generate --name SLUG [--root PATH] [--prompt TEXT] [--reference-image PATH]
 
 Roots default to THAPLAN_ROOTS or the current directory. Each root is searched for
 nested docs/plans directories. Plans are paired by basename: name.md + name.html.
+
+The plan cache (∼/.local/share/thaplan/plan-cache.json) speeds up repeated scans
+by reusing metadata from unchanged files. Use --no-cache to force a full re-scan,
+or --clear-cache to delete the cache file.
 `);
 }
 
@@ -52,6 +56,14 @@ function parseArgs(argv) {
 			options.json = true;
 			continue;
 		}
+		if (key === "no-cache") {
+			options.noCache = true;
+			continue;
+		}
+		if (key === "clear-cache") {
+			options.clearCache = true;
+			continue;
+		}
 		if (key === "root") {
 			const value = inlineValue ?? argv[++index];
 			if (value) options.roots.push(value);
@@ -70,7 +82,7 @@ function getRoots(options) {
 }
 
 function planRows(options) {
-	const plans = discoverPlans(getRoots(options));
+	const plans = discoverPlans(getRoots(options), { noCache: options.noCache === true });
 	const filtered = searchPlans(plans, options.search);
 	return sortPlans(filtered, options.sort || "modified");
 }
@@ -191,7 +203,7 @@ function serveCommand(options, initialPlan) {
 	const roots = getRoots(options);
 	const server = http.createServer(async (req, res) => {
 		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-		const plans = discoverPlans(roots);
+		const plans = discoverPlans(roots, { noCache: options.noCache === true });
 		if (url.pathname === "/api/plans") {
 			const filtered = sortPlans(
 				searchPlans(plans, url.searchParams.get("search") || ""),
@@ -375,6 +387,18 @@ const { positionals, options } = parseArgs(process.argv.slice(2));
 
 async function main() {
 	if (options.help || positionals[0] === "help") return usage();
+
+	if (options.clearCache) {
+		const cachePath = path.join(os.homedir(), ".local", "share", "thaplan", "plan-cache.json");
+		try {
+			fs.unlinkSync(cachePath);
+			console.log("Cleared thaplan plan cache.");
+		} catch {
+			console.log("No cache to clear.");
+		}
+		if (!positionals[0]) return 0;
+	}
+
 	const command = positionals[0];
 	try {
 		if (!command && process.stdin.isTTY && process.stdout.isTTY) return interactiveCommand(options);
