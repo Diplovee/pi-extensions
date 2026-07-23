@@ -22,7 +22,7 @@ function loadPlanCache() {
 	try {
 		return JSON.parse(fs.readFileSync(CACHE_PATH, "utf8"));
 	} catch {
-		return { version: 1, files: {} };
+		return { version: 2, roots: {} };
 	}
 }
 
@@ -35,14 +35,47 @@ function savePlanCache(cache) {
 	}
 }
 
-function findCachedFile(filePath, cache) {
-	const entry = cache.files[filePath];
-	if (!entry) return null;
+function dirMtime(dirPath) {
 	try {
-		const mtime = fs.statSync(filePath).mtimeMs;
-		if (entry.mtime === mtime) return entry.plan;
+		return fs.statSync(dirPath).mtimeMs;
 	} catch {
-		// File no longer exists
+		return 0;
+	}
+}
+
+/**
+ * Check which plan root directories in the cache are still valid
+ * (same mtime = no files added/removed). Returns the set of valid
+ * plan root paths for which the cached file list can be reused.
+ */
+function validCachedPlanRoots(cache, rootKey) {
+	const root = cache.roots[rootKey];
+	if (!root?.planRoots) return new Set();
+	const valid = new Set();
+	for (const [planRoot, cached] of Object.entries(root.planRoots)) {
+		if (dirMtime(planRoot) === cached.mtime) {
+			valid.add(planRoot);
+		}
+	}
+	return valid;
+}
+
+/**
+ * Get a cached file's metadata. Stats the file to detect changes.
+ * Returns { metadata, cachedMtime, cachedBirthtime } or null.
+ */
+function findCachedFile(filePath, cache) {
+	let mtime;
+	try {
+		mtime = fs.statSync(filePath).mtimeMs;
+	} catch {
+		return null;
+	}
+	for (const root of Object.values(cache.roots)) {
+		const entry = root.files?.[filePath];
+		if (entry && entry.mtime === mtime) {
+			return entry.plan ?? null;
+		}
 	}
 	return null;
 }
@@ -162,17 +195,16 @@ export function pairPlanFiles(files, root = process.cwd(), cache = null, seenFil
 		// Try cache for unchanged markdown files
 		let metadata = {};
 		let markdown = "";
-		let usedCache = false;
+		let cachedPlan = null;
 
 		if (markdownPath && cache) {
-			const cached = findCachedFile(markdownPath, cache);
-			if (cached) {
-				metadata = cached.metadata;
-				usedCache = true;
+			cachedPlan = findCachedFile(markdownPath, cache);
+			if (cachedPlan) {
+				metadata = cachedPlan.metadata;
 			}
 		}
 
-		if (!usedCache && markdownPath) {
+		if (!cachedPlan && markdownPath) {
 			metadata = readMetadata(markdownPath);
 			try {
 				markdown = fs.readFileSync(markdownPath, "utf8");
@@ -181,10 +213,26 @@ export function pairPlanFiles(files, root = process.cwd(), cache = null, seenFil
 			}
 		}
 
-		const stats = [markdownPath, pair.htmlPath]
-			.filter(Boolean)
-			.map((file) => fs.statSync(file))
-			.sort((a, b) => b.mtimeMs - a.mtimeMs);
+		// Use cached stats when available to avoid fs.statSync calls
+		let mtimeMs;
+		let birthtimeMs;
+
+		if (cachedPlan) {
+			mtimeMs = cachedPlan.cachedMtime;
+			birthtimeMs = cachedPlan.cachedBirthtime;
+		} else {
+			const allStats = [markdownPath, pair.htmlPath]
+				.filter(Boolean)
+				.map((file) => fs.statSync(file))
+				.sort((a, b) => b.mtimeMs - a.mtimeMs);
+			mtimeMs = allStats[0]?.mtimeMs ?? 0;
+			birthtimeMs = Math.min(
+				...[markdownPath, pair.htmlPath]
+					.filter(Boolean)
+					.map((file) => fs.statSync(file).birthtimeMs || fs.statSync(file).ctimeMs),
+			);
+		}
+
 		const planRoot = path.dirname(path.dirname(pair.directory));
 		const relativeDirectory = normalizePath(path.relative(root, pair.directory));
 		const relativeRoot = normalizePath(path.relative(root, planRoot));
@@ -203,21 +251,29 @@ export function pairPlanFiles(files, root = process.cwd(), cache = null, seenFil
 			markdownPath,
 			htmlPath: pair.htmlPath,
 			complete: Boolean(markdownPath && pair.htmlPath),
-			updatedAt: stats[0]?.mtimeMs ?? 0,
-			createdAt: Math.min(
-				...[markdownPath, pair.htmlPath]
-					.filter(Boolean)
-					.map((file) => fs.statSync(file).birthtimeMs || fs.statSync(file).ctimeMs),
-			),
+			updatedAt: mtimeMs,
+			createdAt: birthtimeMs,
 		};
 
 		// Update cache for this markdown file
-		if (markdownPath && cache && !usedCache) {
-			cache.files[markdownPath] = {
-				mtime: stats[0]?.mtimeMs ?? 0,
-				plan: { metadata },
-			};
+		if (markdownPath && cache) {
+			// Find which root this path belongs to
+			for (const [rootKey, rootEntry] of Object.entries(cache.roots)) {
+				if (markdownPath.startsWith(rootKey + path.sep)) {
+					if (!rootEntry.files) rootEntry.files = {};
+					if (!cachedPlan || rootEntry.files[markdownPath]?.mtime !== mtimeMs) {
+						rootEntry.files[markdownPath] = {
+							mtime: mtimeMs,
+							plan: { metadata, cachedMtime: mtimeMs, cachedBirthtime: birthtimeMs },
+						};
+					}
+					break;
+				}
+			}
 		}
+
+		if (seenFiles) seenFiles.add(markdownPath);
+		if (seenFiles && pair.htmlPath) seenFiles.add(pair.htmlPath);
 
 		updated.push(plan);
 	}
@@ -229,30 +285,85 @@ export function discoverPlans(roots = [process.cwd()], options = {}) {
 	const useCache = options.noCache !== true;
 	const cache = useCache ? loadPlanCache() : null;
 	const requestedRoots = Array.isArray(roots) ? roots : [roots];
-	const seenFiles = cache ? new Set() : null;
 	const plans = [];
+	const allSeenFiles = new Set();
 
 	for (const root of requestedRoots) {
 		const resolvedRoot = path.resolve(root);
-		for (const planRoot of discoverPlanRoots(resolvedRoot, options)) {
-			let files;
-			try {
-				files = fs
-					.readdirSync(planRoot)
-					.filter((file) => /\.(md|html)$/i.test(file))
-					.map((file) => path.join(planRoot, file));
-			} catch {
-				continue;
-			}
-			plans.push(...pairPlanFiles(files, resolvedRoot, cache, seenFiles));
-		}
-	}
+		const rootKey = resolvedRoot;
 
-	// Remove cache entries for files no longer found on disk
-	if (cache && seenFiles) {
-		for (const key of Object.keys(cache.files)) {
-			if (!seenFiles.has(key)) {
-				delete cache.files[key];
+		// Check which plan root directories can be reused from cache
+		const validRoots = cache ? validCachedPlanRoots(cache, rootKey) : new Set();
+
+		let discoveredRoots;
+		let skippedWalk = false;
+
+		// If all previously cached plan roots are still valid, skip the walk
+		const cachedRoots = cache?.roots?.[rootKey]?.planRoots;
+		if (cachedRoots && validRoots.size === Object.keys(cachedRoots).length) {
+			discoveredRoots = [...validRoots].sort();
+			skippedWalk = true;
+		} else {
+			discoveredRoots = discoverPlanRoots(resolvedRoot, options);
+		}
+
+		// Ensure the cache entry exists for this root
+		if (cache && !cache.roots[rootKey]) {
+			cache.roots[rootKey] = { scannedAt: Date.now(), planRoots: {}, files: {} };
+		}
+
+		for (const planRoot of discoveredRoots) {
+			let files;
+			let reusedCachedFiles = false;
+
+			// Try to reuse cached file list if dir mtime matches
+			if (cache && validRoots.has(planRoot) && skippedWalk) {
+				const cachedFiles = cache.roots[rootKey]?.planRoots?.[planRoot]?.files;
+				if (cachedFiles) {
+					files = cachedFiles.map((f) => path.join(planRoot, f));
+					reusedCachedFiles = true;
+				}
+			}
+
+			if (!files) {
+				try {
+					files = fs
+						.readdirSync(planRoot)
+						.filter((file) => /\.(md|html)$/i.test(file))
+						.map((file) => path.join(planRoot, file));
+				} catch {
+					continue;
+				}
+			}
+
+			// Update cache with file list for this plan root
+			if (cache && !reusedCachedFiles) {
+				if (!cache.roots[rootKey].planRoots[planRoot]) {
+					cache.roots[rootKey].planRoots[planRoot] = { mtime: dirMtime(planRoot), files: [] };
+				}
+				cache.roots[rootKey].planRoots[planRoot].mtime = dirMtime(planRoot);
+				cache.roots[rootKey].planRoots[planRoot].files = files.map((f) => path.basename(f));
+			}
+
+			const oldPlans = plans.length;
+			plans.push(...pairPlanFiles(files, resolvedRoot, cache, allSeenFiles));
+
+			// Add new files to cache
+			if (cache) {
+				for (const file of files) {
+					if (!allSeenFiles.has(file)) {
+						allSeenFiles.add(file);
+					}
+				}
+			}
+		}
+
+		// Prune stale file entries from cache (files no longer on disk)
+		if (cache && cache.roots[rootKey]?.files) {
+			for (const filePath of Object.keys(cache.roots[rootKey].files)) {
+				if (!allSeenFiles.has(filePath)) {
+					delete cache.roots[rootKey].files[filePath];
+				}
 			}
 		}
 	}
