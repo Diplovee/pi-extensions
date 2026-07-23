@@ -359,8 +359,8 @@ async function interactiveCommand(options) {
 			placeholder: "Describe the feature or problem",
 		});
 		if (isCancelled(prompt)) return 130;
+		p.outro(chalk.dim("Starting plan browser with your new plan..."));
 		generateCommand({ ...scopedOptions, name, prompt }, []);
-		p.outro(chalk.green("Plan generation finished."));
 		return 0;
 	}
 	const port = await p.text({ message: "Browser port:", initialValue: String(options.port || DEFAULT_PORT) });
@@ -395,6 +395,13 @@ function generateCommand(options, positionals) {
 	console.log(runPi(DEEPSEEK_MODEL, prompt, ["read", "write", "edit", "grep", "find", "ls", "bash"], rolePath));
 	if (!fs.existsSync(markdownPath)) throw new Error(`Generation completed without creating ${markdownPath}`);
 	console.log(`Created:\n- ${markdownPath}`);
+
+	// Auto-start the plan browser pointing directly to the new plan
+	const planId = `docs/plans/${name}`;
+	const port = Number(options.port || DEFAULT_PORT);
+	console.log(`\n${chalk.bold("→")} Opening plan browser at ${chalk.cyan(`http://localhost:${port}/#plan=${encodeURIComponent(planId)}`)}`);
+	console.log(chalk.dim("  Press Ctrl+C to stop the server when you're done.\n"));
+	serveCommand({ ...options, roots: options.roots || [root], port }, planId);
 }
 
 const { positionals, options } = parseArgs(process.argv.slice(2));
@@ -419,7 +426,8 @@ async function main() {
 		if (!command || command === "list") return listCommand(options);
 		if (command === "serve") return serveCommand(options);
 		if (command === "open") return serveCommand(options, positionals[1]);
-		if (command === "generate") return generateCommand(options, positionals.slice(1));
+		// generate auto-starts the server, so don't exit after it
+	if (command === "generate") { generateCommand(options, positionals.slice(1)); return; }
 		throw new Error(`Unknown command: ${command}`);
 	} catch (error) {
 		console.error(`thaplan: ${error.message}`);
