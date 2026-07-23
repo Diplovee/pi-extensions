@@ -302,3 +302,30 @@ export function serializePlan(plan) {
 	const { markdownPath, htmlPath, ...safe } = plan;
 	return { ...safe, markdownPath, htmlPath };
 }
+
+export function updatePlanStatus(plan, newStatus) {
+	if (!plan.markdownPath) throw new Error("This plan has no Markdown source to edit");
+	const content = fs.readFileSync(plan.markdownPath, "utf8");
+	const updated = content.replace(
+		/^(status:\s*).*/m,
+		(_, prefix) => `${prefix}${newStatus}`,
+	);
+	if (updated === content) {
+		// No status line in frontmatter — insert after opening ---
+		const end = content.indexOf("---\n", 3);
+		if (end !== -1) {
+			const before = content.slice(0, end + 4);
+			const after = content.slice(end + 4);
+			return writePlanFileAtomic(plan.markdownPath, `${before}status: ${newStatus}\n${after}`);
+		}
+		throw new Error("Cannot find frontmatter boundary to insert status");
+	}
+	return writePlanFileAtomic(plan.markdownPath, updated);
+}
+
+function writePlanFileAtomic(filePath, content) {
+	const temporaryPath = `${filePath}.thaplan-${process.pid}.tmp`;
+	fs.writeFileSync(temporaryPath, content, { encoding: "utf8", mode: 0o600 });
+	fs.renameSync(temporaryPath, filePath);
+	return fs.statSync(filePath).mtimeMs;
+}
