@@ -15,6 +15,14 @@ const MAX_RESULT_TEXT_BYTES = 100_000;
 const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
 const MAX_SCREENSHOT_PIXELS = 40_000_000;
 const MAX_VIEWPORT_DIMENSION = 4096;
+const BURAWUZA_TASK_PATTERN = /\b(burawuza|browser|responsive|mobile|tablet|iphone|pixel|ipad|web app|localhost|dev server)\b/i;
+const BURAWUZA_WORKFLOW_GUIDE = `
+Burawuza browser workflow:
+- Use the browser_* tools for web UI work; do not launch a separate Chromium/browser from the shell.
+- browser_navigate starts the headless browser automatically on first use. Keep the same session/profile for the whole task; do not close it between actions.
+- For a local project, first inspect package.json, README, AGENTS.md, or project docs for the documented app/dev-server command. Check whether the app is already running; if not, start it with bash in the background, capture logs, and verify the URL responds before browser_navigate. Do not claim the server is ready until verified.
+- Select the device before navigation when the task specifies one. Use browser_device for named devices: mobile/phone -> iphone-15 (and pixel-7 when Android behavior matters), tablet -> ipad, desktop -> desktop. If responsive behavior is unspecified, test desktop and iphone-15; use browser_resize only for an exact custom viewport.
+- After changing device or viewport, call browser_page_info to verify it. Use browser_screenshot and browser_content to inspect results, then interact with browser_click/browser_type/browser_press/browser_scroll as needed.`;
 const DEVICE_PRESETS = {
   desktop: "Desktop Chrome",
   "desktop-hidpi": "Desktop Chrome HiDPI",
@@ -229,8 +237,9 @@ function listProfiles(): string[] {
 const browserNavigate = defineTool({
   name: "browser_navigate",
   label: "Open Burawuza",
-  description: "Navigate the standalone headless Burawuza browser to a URL. The selected persistent profile keeps login cookies and browser storage across Pi restarts.",
+  description: "Navigate the standalone headless Burawuza browser to a URL. The selected persistent profile keeps login cookies and browser storage across Pi restarts. For local apps, start and verify the app server first using the documented project command.",
   promptSnippet: "browser_navigate – open a URL in standalone headless Burawuza",
+  promptGuidelines: ["Use browser_navigate after selecting the requested browser_device and after verifying any local app server is running; browser_navigate starts Burawuza automatically."],
   parameters: Type.Object({ url: Type.String({ description: "The full URL to navigate to" }) }),
   async execute(_toolCallId, params, signal) {
     return enqueue(async () => {
@@ -327,8 +336,9 @@ const browserPageInfo = defineTool({
 const browserDevice = defineTool({
   name: "browser_device",
   label: "Set Burawuza Device",
-  description: "Select a named responsive device preset. This changes viewport, user-agent, mobile behavior, touch support, and device pixel ratio. Switching devices recreates the page context but retains the persistent profile and reopens the current URL.",
+  description: "Select a named responsive device preset. This changes viewport, user-agent, mobile behavior, touch support, and device pixel ratio. Switching devices recreates the page context but retains the persistent profile and reopens the current URL. Choose the preset from the task: mobile/phone=iphone-15, Android=pixel-7, tablet=ipad, desktop=desktop.",
   promptSnippet: "browser_device – select a mobile, tablet, or desktop device preset",
+  promptGuidelines: ["Use browser_device before browser_navigate when the task names a device or asks for responsive testing; verify the result with browser_page_info."],
   parameters: Type.Object({ device: StringEnum(DEVICE_NAMES as readonly string[]) }),
   async execute(_toolCallId, params, signal) {
     return enqueue(async () => {
@@ -542,6 +552,10 @@ const browserCache = defineTool({
 
 export default function (pi: ExtensionAPI) {
   ensurePrivateDirectory(dataRoot);
+  pi.on("before_agent_start", (event) => {
+    if (!BURAWUZA_TASK_PATTERN.test(event.prompt)) return;
+    return { systemPrompt: `${event.systemPrompt}\n\n${BURAWUZA_WORKFLOW_GUIDE}` };
+  });
   ensurePrivateDirectory(profilesRoot);
   ensurePrivateDirectory(cacheRoot);
   pi.on("session_shutdown", async () => {

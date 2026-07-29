@@ -17,6 +17,8 @@ Persistent profiles retain cookies, localStorage, IndexedDB, service workers, an
 
 The extension provides `browser_*` tools for navigation, screenshots, page content, clicks, typing, keyboard input, scrolling, history, zoom, recovery, device emulation, and arbitrary viewport resizing. `browser_device` supports `desktop`, `desktop-hidpi`, `iphone-13`, `iphone-15`, `iphone-15-landscape`, `pixel-7`, `pixel-7-landscape`, `ipad`, and `ipad-landscape`. Device switching applies the preset viewport, user-agent, mobile behavior, touch support, and device pixel ratio, then reopens the current URL while retaining the persistent profile. `browser_page_info` reports the active device, profile, viewport, user-agent, touch support, and device pixel ratio.
 
+When a prompt mentions Burawuza, browser testing, responsive behavior, or a local web app, the extension adds workflow guidance: inspect project docs for the app-server command, start and verify the server with Bash when needed, select the requested device before navigation, and verify the resulting device/viewport. The browser itself starts automatically on the first browser tool call.
+
 Use `browser_profile` to list, switch, or reset named profiles. Reset requires an interactive user confirmation. Use `browser_cache` to clear optional cached text/HTML. Page caching is opt-in via `browser_content({ cache: true })` and is profile-scoped with a five-minute default TTL; cached content may be stale.
 
 Only `http://` and `https://` navigation is allowed. Pages and cached content are untrusted input, and profiles contain credentials; keep the Burawuza data directory private.
