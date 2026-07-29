@@ -22,7 +22,7 @@ Burawuza browser workflow:
 - browser_navigate starts the headless browser automatically on first use. Keep the same session/profile for the whole task; do not close it between actions.
 - For a local project, first inspect package.json, README, AGENTS.md, or project docs for the documented app/dev-server command. Check whether the app is already running; if not, start it with bash in the background, capture logs, and verify the URL responds before browser_navigate. Do not claim the server is ready until verified.
 - Select the device before navigation when the task specifies one. Use browser_device for named devices: mobile/phone -> iphone-15 (and pixel-7 when Android behavior matters), tablet -> ipad, desktop -> desktop. If responsive behavior is unspecified, test desktop and iphone-15; use browser_resize only for an exact custom viewport.
-- After changing device or viewport, call browser_page_info to verify it. Use browser_screenshot and browser_content to inspect results, then interact with browser_click/browser_type/browser_press/browser_scroll as needed.`;
+- After changing device or viewport, call browser_page_info to verify it. Use browser_screenshot and browser_content to inspect results, browser_console to read console errors or evaluate page state, then interact with browser_click/browser_type/browser_press/browser_scroll as needed.`;
 const DEVICE_PRESETS = {
   desktop: "Desktop Chrome",
   "desktop-hidpi": "Desktop Chrome HiDPI",
@@ -49,6 +49,9 @@ let activeDevice = validateDeviceName(process.env.BURAWUZA_DEVICE || "desktop");
 let context: BrowserContext | undefined;
 let currentPage: Page | undefined;
 const lastUrlByProfile = new Map<string, string>();
+const MAX_CONSOLE_ENTRIES = 200;
+let consoleEntries: ConsoleEntry[] = [];
+const watchedPages = new WeakSet<Page>();
 let operationQueue: Promise<void> = Promise.resolve();
 
 interface CachedContent {
@@ -57,6 +60,20 @@ interface CachedContent {
   content: string;
   storedAt: string;
   title: string;
+}
+
+interface ConsoleEntry {
+  type: string;
+  text: string;
+  url: string;
+  lineNumber?: number;
+  columnNumber?: number;
+  timestamp: string;
+}
+
+function recordConsoleEntry(entry: ConsoleEntry): void {
+  consoleEntries.push(entry);
+  if (consoleEntries.length > MAX_CONSOLE_ENTRIES) consoleEntries.splice(0, consoleEntries.length - MAX_CONSOLE_ENTRIES);
 }
 
 function validateProfileName(value: string): string {
@@ -125,6 +142,7 @@ async function closeContext(): Promise<void> {
   const closingContext = context;
   context = undefined;
   currentPage = undefined;
+  consoleEntries = [];
   if (closingContext) await closingContext.close();
 }
 
@@ -173,6 +191,22 @@ function enqueue<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<
 
 function watchPage(page: Page): void {
   currentPage = page;
+  if (watchedPages.has(page)) return;
+  watchedPages.add(page);
+  page.on("console", (message) => {
+    const location = message.location();
+    recordConsoleEntry({
+      type: message.type(),
+      text: message.text(),
+      url: location.url || page.url(),
+      ...(location.lineNumber >= 0 ? { lineNumber: location.lineNumber } : {}),
+      ...(location.columnNumber >= 0 ? { columnNumber: location.columnNumber } : {}),
+      timestamp: new Date().toISOString(),
+    });
+  });
+  page.on("pageerror", (error) => {
+    recordConsoleEntry({ type: "pageerror", text: error.stack || error.message, url: page.url(), timestamp: new Date().toISOString() });
+  });
   page.on("framenavigated", (frame) => {
     if (frame !== page.mainFrame() || page.isClosed()) return;
     if (isSafePageUrl(page.url())) {
@@ -306,6 +340,43 @@ const browserContent = defineTool({
   },
 });
 
+function serializeConsoleValue(value: unknown): string {
+  try {
+    const serialized = JSON.stringify(value, (_key, nested) => typeof nested === "bigint" ? `${nested}n` : nested, 2);
+    return serialized === undefined ? String(value) : serialized;
+  } catch {
+    return String(value);
+  }
+}
+
+const browserConsole = defineTool({
+  name: "browser_console",
+  label: "Burawuza Console",
+  description: "Read captured browser console/page errors, clear the capture, or evaluate a JavaScript expression in the current safe page. Console entries are limited to the latest 200 messages.",
+  promptSnippet: "browser_console – read errors or evaluate JavaScript in Burawuza",
+  promptGuidelines: ["Use browser_console read to inspect console errors after loading or interacting with a page; use evaluate for focused DOM/state inspection instead of shell-launched browser debugging."],
+  parameters: Type.Object({
+    action: StringEnum(["read", "clear", "evaluate"] as const),
+    expression: Type.Optional(Type.String({ description: "JavaScript expression for action=evaluate" })),
+  }),
+  async execute(_toolCallId, params, signal) {
+    return enqueue(async () => {
+      if (params.action === "clear") {
+        consoleEntries = [];
+        return textResult("Cleared Burawuza console entries.", { action: "clear" });
+      }
+      if (params.action === "read") {
+        return textResult(JSON.stringify(consoleEntries, null, 2), { action: "read", count: consoleEntries.length, profile: activeProfile, url: currentPage && !currentPage.isClosed() ? currentPage.url() : "" });
+      }
+      if (!params.expression?.trim()) throw new Error("browser_console evaluate requires a JavaScript expression");
+      const page = await ensurePage();
+      assertSafePage(page);
+      const value = await page.evaluate((source) => (0, eval)(source), params.expression);
+      return textResult(serializeConsoleValue(value), { action: "evaluate", profile: activeProfile, url: page.url() });
+    }, signal);
+  },
+});
+
 const browserPageInfo = defineTool({
   name: "browser_page_info",
   label: "Burawuza Page Info",
@@ -388,11 +459,34 @@ const browserClick = defineTool({
 const browserType = defineTool({
   name: "browser_type",
   label: "Type in Burawuza",
-  description: "Fill an input or editable element in Burawuza using a CSS selector.",
-  promptSnippet: "browser_type – type text into Burawuza",
+  description: "Reliably fill an input or editable element in Burawuza using a CSS selector. The tool waits for visibility, scrolls the element into view, and falls back to keyboard typing when direct filling is unsupported.",
+  promptSnippet: "browser_type – reliably type text into Burawuza",
   parameters: Type.Object({ selector: Type.String(), text: Type.String(), clear: Type.Optional(Type.Boolean()) }),
   async execute(_toolCallId, params, signal) {
-    return enqueue(async () => { const page = await ensurePage(); if (params.clear ?? true) await page.fill(params.selector, ""); await page.type(params.selector, params.text, { delay: 10, timeout: ACTION_TIMEOUT_MS }); assertSafePage(page); return textResult(`Typed text into ${params.selector} in Burawuza.`, { selector: params.selector, clear: params.clear ?? true }); }, signal);
+    return enqueue(async () => {
+      const page = await ensurePage();
+      const locator = page.locator(params.selector).first();
+      await locator.waitFor({ state: "visible", timeout: ACTION_TIMEOUT_MS });
+      await locator.scrollIntoViewIfNeeded({ timeout: ACTION_TIMEOUT_MS });
+      const clear = params.clear ?? true;
+      let method = "fill";
+      if (clear) {
+        try {
+          await locator.fill(params.text, { timeout: ACTION_TIMEOUT_MS });
+        } catch {
+          method = "keyboard-fallback";
+          await locator.click({ timeout: ACTION_TIMEOUT_MS });
+          await locator.press("Control+A", { timeout: ACTION_TIMEOUT_MS });
+          await locator.pressSequentially(params.text, { delay: 10, timeout: ACTION_TIMEOUT_MS });
+        }
+      } else {
+        method = "keyboard-append";
+        await locator.click({ timeout: ACTION_TIMEOUT_MS });
+        await locator.pressSequentially(params.text, { delay: 10, timeout: ACTION_TIMEOUT_MS });
+      }
+      assertSafePage(page);
+      return textResult(`Typed text into ${params.selector} in Burawuza.`, { selector: params.selector, clear, method });
+    }, signal);
   },
 });
 
@@ -564,6 +658,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(browserNavigate);
   pi.registerTool(browserScreenshot);
   pi.registerTool(browserContent);
+  pi.registerTool(browserConsole);
   pi.registerTool(browserPageInfo);
   pi.registerTool(browserDevice);
   pi.registerTool(browserResize);
