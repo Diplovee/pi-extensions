@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { chromium, devices, errors, type BrowserContext, type Page } from "playwright";
@@ -15,6 +15,19 @@ const MAX_RESULT_TEXT_BYTES = 100_000;
 const MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
 const MAX_SCREENSHOT_PIXELS = 40_000_000;
 const MAX_VIEWPORT_DIMENSION = 4096;
+const MAX_MEMORY_PAGES = 50;
+const MAX_MEMORY_EVENTS = 100;
+const MAX_MEMORY_SUMMARY_CHARS = 1800;
+const MAX_MEMORY_READ_CHARS = 16_000;
+const MAX_MEMORY_SCREENSHOTS = 8;
+const MAX_MEMORY_SCREENSHOT_BYTES = 24 * 1024 * 1024;
+const MAX_MEMORY_FILE_BYTES = 256 * 1024;
+const MAX_MEMORY_CAPTURE_CHARS = 12_000;
+const MAX_MEMORY_CAPTURE_NODES = 2_000;
+const MAX_MEMORY_SELECTOR_CHARS = 500;
+const PROJECT_MEMORY_RELATIVE_DIR = ".pi/burawuza";
+const PROJECT_MEMORY_CLEAR_MARKER = ".pi/burawuza-clear.json";
+const MEMORY_LOCK_STALE_MS = 120_000;
 const BURAWUZA_TASK_PATTERN = /\b(burawuza|browser|responsive|mobile|tablet|iphone|pixel|ipad|web app|localhost|dev server)\b/i;
 const BURAWUZA_WORKFLOW_GUIDE = `
 Burawuza browser workflow:
@@ -22,7 +35,8 @@ Burawuza browser workflow:
 - browser_navigate starts the headless browser automatically on first use. Keep the same session/profile for the whole task; do not close it between actions.
 - For a local project, first inspect package.json, README, AGENTS.md, or project docs for the documented app/dev-server command. Check whether the app is already running; if not, start it with bash in the background, capture logs, and verify the URL responds before browser_navigate. Do not claim the server is ready until verified.
 - Select the device before navigation when the task specifies one. Use browser_device for named devices: mobile/phone -> iphone-15 (and pixel-7 when Android behavior matters), tablet -> ipad, desktop -> desktop. If responsive behavior is unspecified, test desktop and iphone-15; use browser_resize only for an exact custom viewport.
-- After changing device or viewport, call browser_page_info to verify it. Use browser_screenshot and browser_content to inspect results, browser_console to read console errors or evaluate page state, then interact with browser_click/browser_type/browser_press/browser_scroll as needed.`;
+- Before interacting with a project app, use browser_memory read to load the compact project-local Burawuza knowledge. Treat it as a hint and verify it live.
+- After changing device or viewport, call browser_page_info to verify it. Use browser_screenshot and browser_content to inspect results, browser_console to read console errors or evaluate page state, then interact with browser_click/browser_type/browser_press/browser_scroll as needed. Browser actions automatically update the project memory when the UI changes. Use browser_screenshot with remember=true for explicit visual checkpoints and browser_content with remember=true for short stable labels/content; do not save screenshots or previews containing secrets.`;
 const DEVICE_PRESETS = {
   desktop: "Desktop Chrome",
   "desktop-hidpi": "Desktop Chrome HiDPI",
@@ -46,6 +60,7 @@ const ignoreHTTPSErrors = process.env.BURAWUZA_IGNORE_HTTPS_ERRORS === "1";
 
 let activeProfile = validateProfileName(process.env.BURAWUZA_PROFILE || "default");
 let activeDevice = validateDeviceName(process.env.BURAWUZA_DEVICE || "desktop");
+let activeProjectCwd = process.cwd();
 let context: BrowserContext | undefined;
 let currentPage: Page | undefined;
 const lastUrlByProfile = new Map<string, string>();
@@ -53,6 +68,10 @@ const MAX_CONSOLE_ENTRIES = 200;
 let consoleEntries: ConsoleEntry[] = [];
 const watchedPages = new WeakSet<Page>();
 let operationQueue: Promise<void> = Promise.resolve();
+let memoryWriteQueue: Promise<void> = Promise.resolve();
+let memoryGeneration = 0;
+const toolMemoryGeneration = new Map<string, number>();
+const toolCallStartedAt = new Map<string, number>();
 
 interface CachedContent {
   url: string;
@@ -69,6 +88,24 @@ interface ConsoleEntry {
   lineNumber?: number;
   columnNumber?: number;
   timestamp: string;
+}
+
+interface ProjectPageMemory {
+  url: string;
+  title: string;
+  profile: string;
+  device: string;
+  viewport: { width: number; height: number } | null;
+  contentHash: string;
+  summary: string;
+  lastSeen: string;
+  lastScreenshot?: string;
+}
+
+interface ProjectMemory {
+  version: 1;
+  updatedAt: string;
+  pages: Record<string, ProjectPageMemory>;
 }
 
 function recordConsoleEntry(entry: ConsoleEntry): void {
@@ -114,7 +151,13 @@ function truncateResult(value: string): { text: string; truncated: boolean } {
 }
 
 function ensurePrivateDirectory(path: string): void {
+  try {
+    if (lstatSync(path).isSymbolicLink()) throw new Error(`Refusing symlinked Burawuza directory: ${path}`);
+  } catch (error) {
+    if ((error as { code?: string }).code !== "ENOENT") throw error;
+  }
   mkdirSync(path, { recursive: true, mode: 0o700 });
+  if (lstatSync(path).isSymbolicLink()) throw new Error(`Refusing symlinked Burawuza directory: ${path}`);
   try { chmodSync(path, 0o700); } catch { /* Best effort on platforms without POSIX permissions. */ }
 }
 
@@ -129,6 +172,327 @@ function cacheFile(url: string, mode: "text" | "html", profile = activeProfile):
   const key = createHash("sha256").update(`${validateProfileName(profile)}\n${mode}\n${url}`).digest("hex");
   ensurePrivateDirectory(cacheRoot);
   return join(cacheRoot, `${key}.json`);
+}
+
+function projectMemoryRoot(cwd = activeProjectCwd): string {
+  const project = lstatSync(cwd);
+  if (project.isSymbolicLink()) throw new Error(`Refusing symlinked project directory: ${cwd}`);
+  const piDirectory = join(cwd, ".pi");
+  if (existsSync(piDirectory) && lstatSync(piDirectory).isSymbolicLink()) throw new Error(`Refusing symlinked project .pi directory: ${piDirectory}`);
+  ensurePrivateDirectory(piDirectory);
+  const root = join(piDirectory, "burawuza");
+  ensurePrivateDirectory(root);
+  return root;
+}
+
+function atomicWrite(path: string, value: string): void {
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, value, { encoding: "utf8", mode: 0o600 });
+  renameSync(temporary, path);
+}
+
+function readBoundedFile(path: string, maxBytes: number): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    if (size > maxBytes) return undefined;
+    const buffer = Buffer.alloc(size);
+    readSync(fd, buffer, 0, size, 0);
+    return buffer.toString("utf8");
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function sanitizePageMemory(value: unknown): ProjectPageMemory | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const page = value as Partial<ProjectPageMemory>;
+  if (typeof page.url !== "string" || typeof page.title !== "string" || typeof page.contentHash !== "string" || typeof page.lastSeen !== "string") return undefined;
+  return {
+    url: safeMemoryUrl(page.url).slice(0, 512),
+    title: compactMemoryText(page.title, 200),
+    profile: typeof page.profile === "string" ? page.profile.slice(0, 64) : "default",
+    device: typeof page.device === "string" ? page.device.slice(0, 64) : "desktop",
+    viewport: page.viewport && typeof page.viewport.width === "number" && typeof page.viewport.height === "number" ? { width: page.viewport.width, height: page.viewport.height } : null,
+    contentHash: page.contentHash.slice(0, 128),
+    summary: compactMemoryText(typeof page.summary === "string" ? page.summary : ""),
+    lastSeen: page.lastSeen.slice(0, 64),
+    ...(typeof page.lastScreenshot === "string" ? { lastScreenshot: page.lastScreenshot.slice(0, 256) } : {}),
+  };
+}
+
+function readProjectMemory(cwd = activeProjectCwd): ProjectMemory {
+  const path = join(projectMemoryRoot(cwd), "knowledge.json");
+  try {
+    const contents = readBoundedFile(path, MAX_MEMORY_FILE_BYTES);
+    if (!contents) throw new Error("memory file too large or unavailable");
+    const parsed = JSON.parse(contents) as Partial<ProjectMemory>;
+    if (parsed.version !== 1 || typeof parsed.pages !== "object" || parsed.pages === null) throw new Error("invalid memory");
+    const pages = Object.fromEntries(Object.entries(parsed.pages).flatMap(([key, value]) => {
+      const page = sanitizePageMemory(value);
+      if (!page) return [];
+      if (page.lastScreenshot && !existsSync(join(cwd, page.lastScreenshot))) delete page.lastScreenshot;
+      return [[key.slice(0, 64), page]];
+    }).slice(0, MAX_MEMORY_PAGES));
+    return { version: 1, updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt.slice(0, 64) : new Date(0).toISOString(), pages };
+  } catch {
+    return { version: 1, updatedAt: new Date(0).toISOString(), pages: {} };
+  }
+}
+
+function sanitizeLoadedEvent(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const event = value as Record<string, unknown>;
+  const sanitized: Record<string, unknown> = {};
+  for (const key of ["timestamp", "tool", "profile", "device", "contentHash"]) {
+    if (typeof event[key] === "string") sanitized[key] = String(event[key]).slice(0, 256);
+  }
+  if (typeof event.url === "string") sanitized.url = safeMemoryUrl(event.url);
+  if (typeof event.title === "string") sanitized.title = compactMemoryText(event.title, 200);
+  if (typeof event.changed === "boolean") sanitized.changed = event.changed;
+  if (typeof event.error === "boolean") sanitized.error = event.error;
+  if (typeof event.action === "object" && event.action !== null) sanitized.action = memoryAction(event.action);
+  if (typeof event.screenshot === "string" && event.screenshot.startsWith(`${PROJECT_MEMORY_RELATIVE_DIR}/screenshots/`)) sanitized.screenshot = event.screenshot.slice(0, 256);
+  if (Array.isArray(event.consoleTail)) sanitized.consoleTail = event.consoleTail.slice(-5).flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const item = entry as Record<string, unknown>;
+    return [{ type: typeof item.type === "string" ? item.type.slice(0, 40) : "log", text: compactMemoryText(typeof item.text === "string" ? item.text : "", 400), url: typeof item.url === "string" ? safeMemoryUrl(item.url) : "" }];
+  });
+  return sanitized;
+}
+
+function readProjectEvents(cwd = activeProjectCwd): Array<Record<string, unknown>> {
+  const path = join(projectMemoryRoot(cwd), "events.jsonl");
+  try {
+    const stat = statSync(path);
+    const length = Math.min(stat.size, MAX_MEMORY_FILE_BYTES);
+    const buffer = Buffer.alloc(length);
+    const fd = openSync(path, "r");
+    try { readSync(fd, buffer, 0, length, Math.max(0, fstatSync(fd).size - length)); } finally { closeSync(fd); }
+    const contents = buffer.toString("utf8");
+    return contents.split(/\r?\n/).filter(Boolean).slice(-MAX_MEMORY_EVENTS).flatMap((line) => {
+      try {
+        const event = sanitizeLoadedEvent(JSON.parse(line));
+        return event ? [event] : [];
+      } catch { return []; }
+    });
+  } catch {
+    return [];
+  }
+}
+
+function redactMemoryText(value: string): string {
+  return value
+    .replace(/\bBearer\s+[A-Za-z0-9._~-]+/gi, "Bearer [redacted]")
+    .replace(/\b(?:token|access[_-]?token|refresh[_-]?token|auth[_-]?token)\s+[A-Za-z0-9._~-]+/gi, "[secret]=[redacted]")
+    .replace(/["']?(?:password|passwd|secret|token|client[_-]?secret|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|session[_-]?id|api[-_ ]?key|authorization|cookie|jwt|private[-_ ]?key|client[-_ ]?id)["']?\s*[:=]\s*(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|[^,;\n}\]]+)/gi, "[secret]=[redacted]")
+    .replace(/\b(?:sk|pk|key|secret)[_-][A-Za-z0-9_-]{16,}\b/gi, "[secret]=[redacted]")
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[opaque]=[redacted]");
+}
+
+function compactMemoryText(value: string, maxChars = MAX_MEMORY_SUMMARY_CHARS): string {
+  const compact = redactMemoryText(value).replace(/\s+/g, " ").trim();
+  return compact.length > maxChars ? `${compact.slice(0, maxChars)}…` : compact;
+}
+
+function pageMemoryKey(url: string): string {
+  return createHash("sha256").update(`${activeProfile}\n${activeDevice}\n${url}`).digest("hex").slice(0, 24);
+}
+
+async function captureProjectPageMemory(page: Page): Promise<ProjectPageMemory | undefined> {
+  if (page.isClosed() || !isSafePageUrl(page.url())) return undefined;
+  const fullUrl = page.url();
+  const title = await page.title().catch(() => "");
+  const captured = await page.evaluate(({ maxChars, maxNodes }) => {
+    if (!document.body) return undefined;
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let hash = 2166136261;
+    let visibleChars = 0;
+    let nodes = 0;
+    let truncated = false;
+    let node: Node | null = walker.nextNode();
+    while (node && visibleChars < maxChars && nodes < maxNodes) {
+      const parent = node.parentElement;
+      const style = parent ? getComputedStyle(parent) : undefined;
+      const hidden = !parent || Boolean(parent.closest("script,style,noscript,template")) || !parent.getClientRects().length || style?.visibility === "hidden" || style?.display === "none" || style?.opacity === "0" || style?.filter !== "none";
+      if (!hidden) {
+        const value = node.textContent ?? "";
+        const remaining = maxChars - visibleChars;
+        for (const character of value.slice(0, remaining)) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+        visibleChars += Math.min(value.length, remaining);
+        truncated = truncated || value.length > remaining;
+      }
+      nodes += 1;
+      node = walker.nextNode();
+    }
+    if (node) truncated = true;
+    return { hash: (hash >>> 0).toString(16), visibleChars, truncated };
+  }, { maxChars: MAX_MEMORY_CAPTURE_CHARS, maxNodes: MAX_MEMORY_CAPTURE_NODES }).catch(() => undefined);
+  if (!captured) return undefined;
+  const storedUrl = safeMemoryUrl(fullUrl);
+  const contentHash = createHash("sha256").update(`${title}\n${fullUrl}\n${captured.hash}\n${captured.visibleChars}\n${captured.truncated}`).digest("hex");
+  return { url: storedUrl, title: compactMemoryText(title, 200), profile: activeProfile, device: activeDevice, viewport: page.viewportSize(), contentHash, summary: "", lastSeen: new Date().toISOString() };
+}
+
+function saveProjectScreenshot(cwd: string, data: string): { path: string; removed: string[] } | undefined {
+  const screenshotsRoot = join(projectMemoryRoot(cwd), "screenshots");
+  ensurePrivateDirectory(screenshotsRoot);
+  const buffer = Buffer.from(data, "base64");
+  if (buffer.byteLength > MAX_SCREENSHOT_BYTES) return undefined;
+  const filename = `${Date.now()}-${createHash("sha256").update(buffer).digest("hex").slice(0, 10)}.png`;
+  const path = join(screenshotsRoot, filename);
+  writeFileSync(path, buffer, { mode: 0o600 });
+  const files = readdirSync(screenshotsRoot).filter((entry) => entry.endsWith(".png")).map((entry) => {
+    const filePath = join(screenshotsRoot, entry);
+    try { return { entry, path: filePath, mtime: statSync(filePath).mtimeMs, size: statSync(filePath).size }; } catch { return undefined; }
+  }).filter((entry): entry is { entry: string; path: string; mtime: number; size: number } => Boolean(entry)).sort((left, right) => left.mtime - right.mtime);
+  let total = files.reduce((sum, file) => sum + file.size, 0);
+  const removed: string[] = [];
+  while (files.length > MAX_MEMORY_SCREENSHOTS || total > MAX_MEMORY_SCREENSHOT_BYTES) {
+    const oldest = files.shift();
+    if (!oldest) break;
+    total -= oldest.size;
+    removed.push(`${PROJECT_MEMORY_RELATIVE_DIR}/screenshots/${oldest.entry}`);
+    rmSync(oldest.path, { force: true });
+  }
+  return { path: `${PROJECT_MEMORY_RELATIVE_DIR}/screenshots/${filename}`, removed };
+}
+
+function safeMemoryUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "[blocked-url]";
+    const pathname = url.pathname.split("/").map((segment) => {
+      if (!segment) return "";
+      if (segment.length > 64 || /(?:password|passwd|secret|token|session|auth|key)/i.test(segment) || /^[A-Za-z0-9_-]{24,}$/.test(segment)) return "[redacted]";
+      return segment.slice(0, 128);
+    }).join("/");
+    return `${url.origin}${pathname.slice(0, 512)}`;
+  } catch {
+    return "[invalid-url]";
+  }
+}
+
+async function withProjectMemoryLock<T>(cwd: string, operation: () => Promise<T>): Promise<T> {
+  const root = projectMemoryRoot(cwd);
+  const lockPath = join(root, ".lock");
+  const owner = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const ownerRecord = JSON.stringify({ pid: process.pid, owner });
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const fd = openSync(lockPath, "wx", 0o600);
+      closeSync(fd);
+      writeFileSync(lockPath, ownerRecord, { encoding: "utf8", mode: 0o600 });
+      const heartbeat = setInterval(() => {
+        try { if (readFileSync(lockPath, "utf8") === ownerRecord) utimesSync(lockPath, new Date(), new Date()); } catch { /* The stale-lock recovery may have replaced it. */ }
+      }, 5_000);
+      heartbeat.unref?.();
+      try { return await operation(); } finally {
+        clearInterval(heartbeat);
+        try { if (readFileSync(lockPath, "utf8") === ownerRecord) rmSync(lockPath, { force: true }); } catch { /* The stale-lock recovery may have replaced it. */ }
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code !== "EEXIST") throw error;
+      try {
+        const lockStat = statSync(lockPath);
+        let lockInfo: { pid?: unknown } = {};
+        try { lockInfo = JSON.parse(readFileSync(lockPath, "utf8")) as { pid?: unknown }; } catch { /* Reclaim an old partially-written lock below. */ }
+        let ownerAlive = false;
+        if (typeof lockInfo.pid === "number" && lockInfo.pid !== process.pid) {
+          try { process.kill(lockInfo.pid, 0); ownerAlive = true; } catch { ownerAlive = false; }
+        }
+        if (!ownerAlive && Date.now() - lockStat.mtimeMs > MEMORY_LOCK_STALE_MS) rmSync(lockPath, { force: true });
+      } catch { /* The competing writer may have released the lock. */ }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw new Error("Timed out waiting for Burawuza project memory lock");
+}
+
+function memoryAction(input: unknown): Record<string, unknown> {
+  const value = typeof input === "object" && input !== null ? input as Record<string, unknown> : {};
+  const action: Record<string, unknown> = {};
+  for (const key of ["url", "selector", "device", "mode", "key", "width", "height", "factor", "deltaX", "deltaY"]) {
+    if (typeof value[key] === "string" || typeof value[key] === "number") {
+      if (key === "url") action[key] = safeMemoryUrl(String(value[key]));
+      else if (typeof value[key] === "string") action[key] = redactMemoryText(String(value[key])).slice(0, MAX_MEMORY_SELECTOR_CHARS);
+      else action[key] = value[key];
+    }
+  }
+  if (typeof value.remember === "boolean") action.remember = value.remember;
+  if (typeof value.text === "string") action.textLength = value.text.length;
+  if (typeof value.expression === "string") action.evaluated = true;
+  return action;
+}
+
+async function recordProjectBrowserEvent(cwd: string, toolName: string, input: unknown, isError: boolean, content: unknown, startedAt = Date.now()): Promise<void> {
+  await withProjectMemoryLock(cwd, async () => {
+  const clearMarker = readBoundedFile(join(cwd, PROJECT_MEMORY_CLEAR_MARKER), 1_024);
+  if (clearMarker) {
+    try { if (startedAt <= Number((JSON.parse(clearMarker) as { clearedAt?: unknown }).clearedAt)) return; } catch { /* Ignore malformed markers. */ }
+  }
+  const root = projectMemoryRoot(cwd);
+  const memory = readProjectMemory(cwd);
+  const page = activePage();
+  const snapshot = page ? await captureProjectPageMemory(page) : undefined;
+  let screenshotPath: string | undefined;
+  let removedScreenshots: string[] = [];
+  let rememberedContent: string | undefined;
+  const toolInput = typeof input === "object" && input !== null ? input as Record<string, unknown> : {};
+  if (!isError && toolName === "browser_content" && toolInput.remember === true && Array.isArray(content)) {
+    const text = content.find((item) => typeof item === "object" && item !== null && (item as { type?: unknown }).type === "text") as { text?: unknown } | undefined;
+    if (typeof text?.text === "string") rememberedContent = compactMemoryText(text.text, 600);
+  }
+  if (!isError && toolName === "browser_screenshot" && toolInput.remember === true && Array.isArray(content)) {
+    const image = content.find((item) => typeof item === "object" && item !== null && (item as { type?: unknown }).type === "image") as { data?: unknown } | undefined;
+    if (typeof image?.data === "string") {
+      const saved = saveProjectScreenshot(cwd, image.data);
+      screenshotPath = saved?.path;
+      removedScreenshots = saved?.removed ?? [];
+    }
+  }
+  let changed = false;
+  if (snapshot) {
+    const key = pageMemoryKey(snapshot.url);
+    const previous = memory.pages[key];
+    changed = Boolean(previous && previous.contentHash !== snapshot.contentHash);
+    const previousScreenshot = previous?.lastScreenshot && !removedScreenshots.includes(previous.lastScreenshot) ? previous.lastScreenshot : undefined;
+    memory.pages[key] = { ...snapshot, summary: rememberedContent ?? previous?.summary ?? snapshot.summary, ...(screenshotPath ? { lastScreenshot: screenshotPath } : previousScreenshot ? { lastScreenshot: previousScreenshot } : {}) };
+    const pages = Object.entries(memory.pages).sort(([, left], [, right]) => right.lastSeen.localeCompare(left.lastSeen)).slice(0, MAX_MEMORY_PAGES);
+    memory.pages = Object.fromEntries(pages);
+  }
+  if (removedScreenshots.length > 0) {
+    for (const page of Object.values(memory.pages)) if (page.lastScreenshot && removedScreenshots.includes(page.lastScreenshot)) delete page.lastScreenshot;
+  }
+  const event: Record<string, unknown> = {
+    timestamp: new Date().toISOString(),
+    tool: toolName,
+    action: memoryAction(input),
+    profile: activeProfile,
+    device: activeDevice,
+    ...(snapshot ? { url: snapshot.url, title: snapshot.title, viewport: snapshot.viewport, contentHash: snapshot.contentHash, changed } : {}),
+    ...(screenshotPath ? { screenshot: screenshotPath } : {}),
+    ...(rememberedContent ? { contentPreview: rememberedContent } : {}),
+    ...(isError ? { error: true } : {}),
+    ...(consoleEntries.length > 0 ? { consoleTail: consoleEntries.slice(-5).map(({ type, url }) => ({ type, url: safeMemoryUrl(url) })) } : {}),
+  };
+  const eventsPath = join(root, "events.jsonl");
+  let events = [...readProjectEvents(cwd), event].filter((entry) => typeof entry.screenshot !== "string" || !removedScreenshots.includes(entry.screenshot as string)).slice(-MAX_MEMORY_EVENTS);
+  while (Buffer.byteLength(events.map((entry) => JSON.stringify(entry)).join("\n"), "utf8") > MAX_MEMORY_FILE_BYTES && events.length > 1) events = events.slice(1);
+  atomicWrite(eventsPath, `${events.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+  memory.updatedAt = new Date().toISOString();
+  let knowledge = JSON.stringify(memory, null, 2);
+  while (Buffer.byteLength(knowledge, "utf8") > MAX_MEMORY_FILE_BYTES && Object.keys(memory.pages).length > 1) {
+    const oldestKey = Object.entries(memory.pages).sort(([, left], [, right]) => left.lastSeen.localeCompare(right.lastSeen))[0]?.[0];
+    if (!oldestKey) break;
+    delete memory.pages[oldestKey];
+    knowledge = JSON.stringify(memory, null, 2);
+  }
+  atomicWrite(join(root, "knowledge.json"), knowledge);
+  });
 }
 
 function activePage(): Page | undefined {
@@ -186,6 +550,12 @@ function enqueue<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<
     return operation();
   });
   operationQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+function enqueueMemory<T>(operation: () => Promise<T>): Promise<T> {
+  const run = memoryWriteQueue.then(operation, operation);
+  memoryWriteQueue = run.then(() => undefined, () => undefined);
   return run;
 }
 
@@ -290,9 +660,9 @@ const browserNavigate = defineTool({
 const browserScreenshot = defineTool({
   name: "browser_screenshot",
   label: "Screenshot Burawuza",
-  description: "Capture the current standalone headless Burawuza page as a PNG image.",
+  description: "Capture the current standalone headless Burawuza page as a PNG image. Set remember=true to save this explicit visual checkpoint in the project-local Burawuza memory; screenshots can contain page-visible secrets.",
   promptSnippet: "browser_screenshot – capture the current Burawuza page",
-  parameters: Type.Object({ fullPage: Type.Optional(Type.Boolean({ description: "Capture the full page instead of the viewport" })) }),
+  parameters: Type.Object({ fullPage: Type.Optional(Type.Boolean({ description: "Capture the full page instead of the viewport" })), remember: Type.Optional(Type.Boolean({ description: "Save this explicit screenshot checkpoint under .pi/burawuza; defaults to false" })) }),
   async execute(_toolCallId, params, signal) {
     return enqueue(async () => {
       const page = await ensurePage();
@@ -305,7 +675,7 @@ const browserScreenshot = defineTool({
       if (dimensions.width * dimensions.height > MAX_SCREENSHOT_PIXELS) throw new Error(`Screenshot dimensions exceed the ${MAX_SCREENSHOT_PIXELS}-pixel safety limit; use a viewport screenshot or resize the page first`);
       const buffer = await page.screenshot({ type: "png", fullPage: params.fullPage ?? false });
       if (buffer.byteLength > MAX_SCREENSHOT_BYTES) throw new Error(`Screenshot exceeds the ${MAX_SCREENSHOT_BYTES}-byte safety limit; use a viewport screenshot or resize the page first`);
-      return { content: [{ type: "image" as const, data: buffer.toString("base64"), mimeType: "image/png" }], details: { url: page.url(), profile: activeProfile, fullPage: params.fullPage ?? false } };
+      return { content: [{ type: "image" as const, data: buffer.toString("base64"), mimeType: "image/png" }], details: { url: page.url(), profile: activeProfile, fullPage: params.fullPage ?? false, remember: params.remember ?? false } };
     }, signal);
   },
 });
@@ -318,6 +688,7 @@ const browserContent = defineTool({
   parameters: Type.Object({
     mode: Type.Optional(StringEnum(["text", "html"] as const)),
     cache: Type.Optional(Type.Boolean({ description: "Read/write a local TTL cache for this URL" })),
+    remember: Type.Optional(Type.Boolean({ description: "Save a short redacted content preview in project Burawuza memory; defaults to false" })),
     refresh: Type.Optional(Type.Boolean({ description: "Ignore an existing cache entry and fetch live content" })),
     maxAgeSeconds: Type.Optional(Type.Number({ minimum: 0, description: "Maximum cache age when cache=true; defaults to 300" })),
   }),
@@ -335,7 +706,7 @@ const browserContent = defineTool({
       const content = mode === "html" ? await page.content() : await page.locator("body").innerText();
       const title = await page.title();
       if (useCache) writeCachedContent({ url: page.url(), mode, content, title, storedAt: new Date().toISOString() });
-      return textResult(content, { url: page.url(), mode, profile: activeProfile, cached: false, ...(useCache ? { cachedForSeconds: maxAgeSeconds } : {}) });
+      return textResult(content, { url: page.url(), mode, profile: activeProfile, cached: false, remember: params.remember ?? false, ...(useCache ? { cachedForSeconds: maxAgeSeconds } : {}) });
     }, signal);
   },
 });
@@ -644,11 +1015,76 @@ const browserCache = defineTool({
   },
 });
 
+const browserMemory = defineTool({
+  name: "browser_memory",
+  label: "Project Burawuza Memory",
+  description: "Read or clear the bounded project-local Burawuza knowledge log at .pi/burawuza. Read it before browser work; it contains compact page summaries, selectors, changes, console tails, and screenshot paths. Live verification is still required.",
+  promptSnippet: "browser_memory – read compact project-local Burawuza knowledge",
+  parameters: Type.Object({ action: StringEnum(["read", "clear"] as const) }),
+  async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    return enqueue(async () => {
+      const root = projectMemoryRoot(ctx.cwd);
+      if (params.action === "clear") {
+        return enqueueMemory(async () => {
+          if (!ctx.hasUI || !await ctx.ui.confirm("Clear Burawuza project memory?", `This deletes ${root}, including saved screenshots.`)) throw new Error("Project memory clear cancelled; an interactive user confirmation is required");
+          return withProjectMemoryLock(ctx.cwd, async () => {
+            memoryGeneration += 1;
+            const clearedAt = Date.now();
+            for (const entry of readdirSync(root)) if (entry !== ".lock") rmSync(join(root, entry), { recursive: true, force: true });
+            atomicWrite(join(ctx.cwd, PROJECT_MEMORY_CLEAR_MARKER), JSON.stringify({ clearedAt }));
+            return textResult(`Cleared project-local Burawuza memory at ${root}.`, { action: "clear", path: root });
+          });
+        });
+      }
+      const memory = readProjectMemory(ctx.cwd);
+      const events = readProjectEvents(ctx.cwd).slice(-20).map((event) => {
+        const compact: Record<string, unknown> = {};
+        for (const key of ["timestamp", "tool", "action", "url", "title", "device", "viewport", "changed", "screenshot", "error"]) if (event[key] !== undefined) compact[key] = event[key];
+        return compact;
+      });
+      const pages = Object.values(memory.pages).sort((left, right) => right.lastSeen.localeCompare(left.lastSeen)).slice(0, 12).map((page) => ({
+        url: safeMemoryUrl(page.url), title: page.title, profile: page.profile, device: page.device, viewport: page.viewport, summary: compactMemoryText(page.summary, 600), contentHash: page.contentHash, lastSeen: page.lastSeen, ...(page.lastScreenshot ? { screenshot: page.lastScreenshot } : {}),
+      }));
+      const payloadValue = { path: root, updatedAt: memory.updatedAt, pages, recentEvents: events };
+      while (JSON.stringify(payloadValue).length > MAX_MEMORY_READ_CHARS && payloadValue.pages.length > 1) payloadValue.pages.pop();
+      while (JSON.stringify(payloadValue).length > MAX_MEMORY_READ_CHARS && payloadValue.recentEvents.length > 1) payloadValue.recentEvents.shift();
+      const payload = JSON.stringify(payloadValue, null, 2);
+      return textResult(payload, { action: "read", path: root, pageCount: payloadValue.pages.length, eventCount: payloadValue.recentEvents.length });
+    }, signal);
+  },
+});
+
+const MEMORY_TRACKED_TOOLS = new Set([
+  "browser_navigate", "browser_screenshot", "browser_content", "browser_console", "browser_page_info", "browser_device", "browser_resize", "browser_click", "browser_type", "browser_hover", "browser_press", "browser_scroll", "browser_zoom", "browser_back", "browser_forward", "browser_reload", "browser_recover",
+]);
+
 export default function (pi: ExtensionAPI) {
   ensurePrivateDirectory(dataRoot);
-  pi.on("before_agent_start", (event) => {
+  pi.on("before_agent_start", (event, ctx) => {
+    activeProjectCwd = ctx.cwd;
     if (!BURAWUZA_TASK_PATTERN.test(event.prompt)) return;
     return { systemPrompt: `${event.systemPrompt}\n\n${BURAWUZA_WORKFLOW_GUIDE}` };
+  });
+  pi.on("session_start", (_event, ctx) => {
+    activeProjectCwd = ctx.cwd;
+  });
+  pi.on("tool_call", (event) => {
+    if (MEMORY_TRACKED_TOOLS.has(event.toolName)) {
+      toolMemoryGeneration.set(event.toolCallId, memoryGeneration);
+      toolCallStartedAt.set(event.toolCallId, Date.now());
+    }
+  });
+  pi.on("tool_result", async (event, ctx) => {
+    if (!MEMORY_TRACKED_TOOLS.has(event.toolName)) return;
+    const generation = toolMemoryGeneration.get(event.toolCallId);
+    const startedAt = toolCallStartedAt.get(event.toolCallId) ?? Date.now();
+    toolMemoryGeneration.delete(event.toolCallId);
+    toolCallStartedAt.delete(event.toolCallId);
+    if (generation !== undefined && generation !== memoryGeneration) return;
+    activeProjectCwd = ctx.cwd;
+    await enqueueMemory(() => recordProjectBrowserEvent(ctx.cwd, event.toolName, event.input, event.isError === true, event.content, startedAt)).catch((error: unknown) => {
+      console.warn(`[burawuza] project memory update failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   });
   ensurePrivateDirectory(profilesRoot);
   ensurePrivateDirectory(cacheRoot);
@@ -675,4 +1111,5 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(browserClose);
   pi.registerTool(browserProfile);
   pi.registerTool(browserCache);
+  pi.registerTool(browserMemory);
 }
