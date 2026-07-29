@@ -178,6 +178,7 @@ Custom personas also get a derived short name for dashboard display.
 
 ### Notes
 
+- The editor's top border shows an elapsed task timer beside the mascot. It runs from `before_agent_start` until `agent_settled`, so tool calls, retries, compaction, and queued steer/follow-up work stay within one duration; the settled duration remains visible until the next task.
 - The dashboard extension now defers footer ownership when `themed-ui` is installed so both can coexist better.
 - Themes are installed into `~/.pi/agent/themes/` by `install.sh`.
 

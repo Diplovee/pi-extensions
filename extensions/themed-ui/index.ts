@@ -1,4 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import {
+	createElapsedTimer,
+	startElapsedTimer,
+	stopElapsedTimer,
+} from "./lib/elapsed-timer";
 import { installEditor } from "./lib/editor-view";
 import { installFooter } from "./lib/footer-view";
 import { installHeader } from "./lib/header-view";
@@ -12,6 +17,20 @@ export default function (pi: ExtensionAPI) {
 	let customHeaderEnabled = true;
 	let mascotName = randomMascotName();
 	let previousMascotName: string | undefined;
+	let elapsedTimer = createElapsedTimer();
+	let timerInterval: ReturnType<typeof setInterval> | undefined;
+	let requestEditorRender: (() => void) | undefined;
+
+	const stopTimerUpdates = () => {
+		if (!timerInterval) return;
+		clearInterval(timerInterval);
+		timerInterval = undefined;
+	};
+
+	const startTimerUpdates = () => {
+		if (timerInterval) return;
+		timerInterval = setInterval(() => requestEditorRender?.(), 1000);
+	};
 
 	const installChrome = (ctx: ExtensionContext) => {
 		installHeader(ctx, { enabled: customHeaderEnabled, modelName });
@@ -20,6 +39,10 @@ export default function (pi: ExtensionAPI) {
 			() => modelName,
 			() => pi.getThinkingLevel(),
 			() => getMascotValue(mascotName) ?? "🤖",
+			() => elapsedTimer,
+			(requestRender) => {
+				requestEditorRender = requestRender;
+			},
 		);
 		installFooter(ctx);
 	};
@@ -38,9 +61,32 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
+		stopTimerUpdates();
+		elapsedTimer = createElapsedTimer();
+		requestEditorRender = undefined;
 		if (!ctx.hasUI) return;
 		modelName = ctx.model?.id ?? "no-model";
 		installChrome(ctx);
+	});
+
+	pi.on("before_agent_start", async (_event, ctx) => {
+		if (!ctx.hasUI) return;
+		const nextTimer = startElapsedTimer(elapsedTimer, Date.now());
+		if (nextTimer === elapsedTimer) return;
+		elapsedTimer = nextTimer;
+		startTimerUpdates();
+		requestEditorRender?.();
+	});
+
+	pi.on("agent_settled", async (_event, ctx) => {
+		elapsedTimer = stopElapsedTimer(elapsedTimer, Date.now());
+		stopTimerUpdates();
+		if (ctx.hasUI) requestEditorRender?.();
+	});
+
+	pi.on("session_shutdown", async () => {
+		stopTimerUpdates();
+		requestEditorRender = undefined;
 	});
 
 	pi.on("model_select", async (event, ctx) => {
