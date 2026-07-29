@@ -25,6 +25,9 @@ Reusable PI extensions for token-efficient memory, phased execution, dashboard v
 - `extensions/themed-ui/`
   Custom PI chrome with themed header, themed input/editor borders, mascot picker, and a compact styled footer.
 
+- `extensions/burawuza/`
+  Standalone headless Playwright browser tools with persistent profiles, responsive device presets, page inspection, interaction, screenshots, and optional TTL content caching. It has no Gau dependency.
+
 - `extensions/subagent/`
   Global subagent orchestration with isolated child Pi processes, single/parallel/chain modes, bounded concurrency, streamed status, cancellation, and Markdown agent roles.
 
@@ -195,7 +198,7 @@ Run from this repository:
 ./install.sh
 ```
 
-This installs the extension globally for Pi, including the subagent role files in `~/.pi/agent/agents/` and workflow prompts in `~/.pi/agent/prompts/`.
+This installs the extensions globally for Pi, including standalone Burawuza and the subagent role files in `~/.pi/agent/agents/` and workflow prompts in `~/.pi/agent/prompts/`.
 
 This symlinks the extensions into `~/.pi/agent/extensions/`.
 

@@ -15,6 +15,16 @@ else
   echo "Warning: bun or npm is required for the thaplan interactive CLI dependencies." >&2
 fi
 
+# Burawuza is a standalone headless browser extension. Keep its Playwright
+# dependency beside the extension so it has no Gau/runtime dependency.
+if command -v npm >/dev/null 2>&1; then
+  (cd "${REPO_DIR}/extensions/burawuza" && npm install --omit=dev --no-fund --no-audit >/dev/null)
+elif command -v bun >/dev/null 2>&1; then
+  (cd "${REPO_DIR}/extensions/burawuza" && bun install --production >/dev/null)
+else
+  echo "Warning: npm or bun is required for Burawuza's Playwright dependency." >&2
+fi
+
 ln -sf "${REPO_DIR}/extensions/auto-memory.ts" "${TARGET_DIR}/auto-memory.ts"
 ln -sf "${REPO_DIR}/extensions/dashboard-ui.ts" "${TARGET_DIR}/dashboard-ui.ts"
 ln -sf "${REPO_DIR}/extensions/context-hygiene.ts" "${TARGET_DIR}/context-hygiene.ts"
@@ -24,6 +34,7 @@ ln -sf "${REPO_DIR}/extensions/phase-tracker.ts" "${TARGET_DIR}/phase-tracker.ts
 ln -sf "${REPO_DIR}/extensions/agent-search-tools.ts" "${TARGET_DIR}/agent-search-tools.ts"
 ln -sf "${REPO_DIR}/extensions/plan-gate.ts" "${TARGET_DIR}/plan-gate.ts"
 ln -sf "${REPO_DIR}/extensions/cosplay.ts" "${TARGET_DIR}/cosplay.ts"
+ln -sfn "${REPO_DIR}/extensions/burawuza" "${TARGET_DIR}/burawuza"
 ln -sfn "${REPO_DIR}/extensions/themed-ui" "${TARGET_DIR}/themed-ui"
 ln -sf "${REPO_DIR}/cli/thaplan.mjs" "${CLI_TARGET_DIR}/thaplan"
 
@@ -56,6 +67,7 @@ echo "  phase-tracker.ts"
 echo "  agent-search-tools.ts"
 echo "  plan-gate.ts"
 echo "  cosplay.ts"
+echo "  burawuza/"
 echo "  themed-ui/"
 echo "  thaplan -> ${CLI_TARGET_DIR}/thaplan"
 echo "  subagent/"
