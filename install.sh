@@ -31,6 +31,7 @@ ln -sf "${REPO_DIR}/cli/thaplan.mjs" "${CLI_TARGET_DIR}/thaplan"
 mkdir -p "${TARGET_DIR}/subagent" "${HOME}/.pi/agent/agents" "${HOME}/.pi/agent/prompts"
 ln -sf "${REPO_DIR}/extensions/subagent/index.ts" "${TARGET_DIR}/subagent/index.ts"
 ln -sf "${REPO_DIR}/extensions/subagent/agents.ts" "${TARGET_DIR}/subagent/agents.ts"
+ln -sf "${REPO_DIR}/extensions/subagent/usage.ts" "${TARGET_DIR}/subagent/usage.ts"
 for agent_file in "${REPO_DIR}"/extensions/subagent/agents/*.md; do
   ln -sf "${agent_file}" "${HOME}/.pi/agent/agents/$(basename "${agent_file}")"
 done

@@ -51,7 +51,7 @@ Safety defaults:
 - Project-local roles require explicit scope and interactive confirmation.
 - Child processes run with `--no-session` and `--exclude-tools subagent`.
 - Parallel execution is for independent work; writing should remain serialized.
-- Child output, usage, failures, and exit status are returned in structured tool details.
+- Child output, usage, failures, and exit status are returned in structured tool details. Completed single, parallel, and chain results also expose aggregate Pi-standard tool usage so session totals include every child model without double counting.
 - Abort signals terminate child processes and clean temporary prompt files.
 
 Workflow prompt templates include `/implement`, `/scout-and-plan`, `/research-and-plan`, `/implement-and-review`, and `/verify`.
@@ -175,10 +175,15 @@ Custom personas also get a derived short name for dashboard display.
 - `/pi-mascot random`
 - `/pi-mascot-next` / `/pi-mascot-prev` / `/pi-mascot-back`
 - `/pi-header-default` / `/pi-header-theme`
+- `/pi-task-summary` — toggle post-task usage summaries
+- `/pi-task-summary on|off|toggle|status`
 
 ### Notes
 
 - The editor's top border shows an elapsed task timer beside the mascot. It runs from `before_agent_start` until `agent_settled`, so tool calls, retries, compaction, and queued steer/follow-up work stay within one duration; the settled duration remains visible until the next task.
+- Task summaries are on by default and appear directly below the final response with that same elapsed duration plus task-only token, cache, and full cost usage. Overall totals count lead assistants, nested tool results (including subagents), compaction, and branch summaries exactly once. Expand the entry for exact counts and a per-model/source breakdown; summaries note the model count compactly when multiple models ran. Summaries are durable custom entries for resume/branch rendering but are never sent to the model.
+- The themed footer uses the same all-entry session accumulator, so its token/cache/cost totals include standard nested-tool and summary usage rather than lead-assistant messages only.
+- The task-summary preference is stored in `~/.pi/agent/themed-ui.json`. The extension safely defaults to on for missing or malformed config and preserves unknown fields when updating it. Turning summaries off affects future tasks only; old persisted entries remain.
 - The dashboard extension now defers footer ownership when `themed-ui` is installed so both can coexist better.
 - Themes are installed into `~/.pi/agent/themes/` by `install.sh`.
 

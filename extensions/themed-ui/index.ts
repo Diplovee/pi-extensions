@@ -1,6 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import {
 	createElapsedTimer,
+	formatElapsed,
 	startElapsedTimer,
 	stopElapsedTimer,
 } from "./lib/elapsed-timer";
@@ -10,6 +12,22 @@ import { installHeader } from "./lib/header-view";
 import { chooseMascot, CURATED_MASCOTS, getMascotValue, randomMascotName } from "./lib/mascots";
 import { chooseTheme } from "./lib/theme-picker";
 import { CURATED_THEMES } from "./lib/shared";
+import {
+	loadTaskSummaryPreference,
+	parseTaskSummaryCommand,
+	saveTaskSummaryPreference,
+} from "./lib/task-summary-preference";
+import {
+	accumulateTaskUsage,
+	entriesAddedSince,
+	formatCompactCost,
+	formatExactNumber,
+	formatTaskUsageBreakdown,
+	formatTokenCount,
+	type TaskSummaryData,
+} from "./lib/task-summary";
+
+const TASK_SUMMARY_ENTRY_TYPE = "themed-ui-task-summary";
 
 export default function (pi: ExtensionAPI) {
 	let modelName = "no-model";
@@ -18,6 +36,8 @@ export default function (pi: ExtensionAPI) {
 	let mascotName = randomMascotName();
 	let previousMascotName: string | undefined;
 	let elapsedTimer = createElapsedTimer();
+	let taskStartEntryIds: ReadonlySet<string> | undefined;
+	let taskSummaryEnabled = true;
 	let timerInterval: ReturnType<typeof setInterval> | undefined;
 	let requestEditorRender: (() => void) | undefined;
 
@@ -60,9 +80,57 @@ export default function (pi: ExtensionAPI) {
 		return true;
 	};
 
+	pi.registerEntryRenderer<TaskSummaryData>(TASK_SUMMARY_ENTRY_TYPE, (entry, { expanded }, theme) => {
+		const data = entry.data;
+		if (!data || data.version !== 1 || !data.usage) return undefined;
+
+		const { usage } = data;
+		const separator = theme.fg("dim", "  ");
+		const breakdown = usage.breakdown ?? [];
+		const modelCount = breakdown.filter((item) => item.category === "model").length;
+		let text = [
+			theme.fg("accent", `◷ ${formatElapsed(data.elapsedMs)}`),
+			theme.fg("muted", `↑${formatTokenCount(usage.input)}`),
+			theme.fg("muted", `↓${formatTokenCount(usage.output)}`),
+			theme.fg("dim", `cache ${formatTokenCount(usage.cacheRead)}/${formatTokenCount(usage.cacheWrite)}`),
+			theme.fg("muted", `Σ${formatTokenCount(usage.totalTokens)}`),
+			theme.fg("success", formatCompactCost(usage.cost.total)),
+			...(modelCount > 1 ? [theme.fg("dim", `${modelCount} models`)] : []),
+		].join(separator);
+
+		if (expanded) {
+			text += `\n${theme.fg(
+				"dim",
+				`input ${formatExactNumber(usage.input)} · output ${formatExactNumber(usage.output)} · reasoning ${formatExactNumber(usage.reasoning)}`,
+			)}`;
+			text += `\n${theme.fg(
+				"dim",
+				`cache read ${formatExactNumber(usage.cacheRead)} · cache write ${formatExactNumber(usage.cacheWrite)} · total ${formatExactNumber(usage.totalTokens)}`,
+			)}`;
+			const costComponents = usage.cost.input + usage.cost.output + usage.cost.cacheRead + usage.cost.cacheWrite;
+			const costDetail =
+				usage.cost.total > 0 && costComponents === 0
+					? `cost $${usage.cost.total.toFixed(6)} (component split unavailable)`
+					: `cost $${usage.cost.total.toFixed(6)} (input $${usage.cost.input.toFixed(6)} · output $${usage.cost.output.toFixed(6)} · cache read/write $${usage.cost.cacheRead.toFixed(6)}/$${usage.cost.cacheWrite.toFixed(6)})`;
+			text += `\n${theme.fg("dim", costDetail)}`;
+			if (breakdown.length > 0) {
+				text += `\n${theme.fg("muted", "Usage by model/source:")}`;
+				for (const item of breakdown) text += `\n${theme.fg("dim", `  ${formatTaskUsageBreakdown(item)}`)}`;
+			}
+			text += `\n${theme.fg(
+				"dim",
+				`${formatExactNumber(usage.usageRecords)} usage record${usage.usageRecords === 1 ? "" : "s"}`,
+			)}`;
+		}
+
+		return new Text(text, 0, 0);
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		stopTimerUpdates();
 		elapsedTimer = createElapsedTimer();
+		taskStartEntryIds = undefined;
+		taskSummaryEnabled = await loadTaskSummaryPreference();
 		requestEditorRender = undefined;
 		if (!ctx.hasUI) return;
 		modelName = ctx.model?.id ?? "no-model";
@@ -74,18 +142,31 @@ export default function (pi: ExtensionAPI) {
 		const nextTimer = startElapsedTimer(elapsedTimer, Date.now());
 		if (nextTimer === elapsedTimer) return;
 		elapsedTimer = nextTimer;
+		taskStartEntryIds = new Set(ctx.sessionManager.getEntries().map((entry) => entry.id));
 		startTimerUpdates();
 		requestEditorRender?.();
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
+		const wasActive = elapsedTimer.active;
+		const idsPresentAtStart = taskStartEntryIds;
 		elapsedTimer = stopElapsedTimer(elapsedTimer, Date.now());
+		taskStartEntryIds = undefined;
 		stopTimerUpdates();
 		if (ctx.hasUI) requestEditorRender?.();
+
+		if (!wasActive || !idsPresentAtStart || !taskSummaryEnabled || ctx.mode !== "tui") return;
+		const taskEntries = entriesAddedSince(ctx.sessionManager.getEntries(), idsPresentAtStart);
+		pi.appendEntry<TaskSummaryData>(TASK_SUMMARY_ENTRY_TYPE, {
+			version: 1,
+			elapsedMs: elapsedTimer.elapsedMs,
+			usage: accumulateTaskUsage(taskEntries),
+		});
 	});
 
 	pi.on("session_shutdown", async () => {
 		stopTimerUpdates();
+		taskStartEntryIds = undefined;
 		requestEditorRender = undefined;
 	});
 
@@ -93,6 +174,37 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		modelName = event.model.id;
 		installChrome(ctx);
+	});
+
+	pi.registerCommand("pi-task-summary", {
+		description: "Toggle or configure post-task usage summaries",
+		handler: async (args, ctx) => {
+			const command = parseTaskSummaryCommand(args, taskSummaryEnabled);
+			if (command.kind === "invalid") {
+				ctx.ui.notify("Usage: /pi-task-summary [on|off|toggle|status]", "warning");
+				return;
+			}
+			if (command.kind === "status") {
+				ctx.ui.notify(`Task summaries are ${taskSummaryEnabled ? "ON" : "OFF"}.`, "info");
+				return;
+			}
+
+			try {
+				await saveTaskSummaryPreference(command.enabled);
+				taskSummaryEnabled = command.enabled;
+				ctx.ui.notify(
+					command.enabled
+						? "Task summaries turned ON."
+						: "Task summaries turned OFF. Existing persisted summaries are unchanged.",
+					command.enabled ? "success" : "info",
+				);
+			} catch (error) {
+				ctx.ui.notify(
+					`Could not save the task-summary preference: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+			}
+		},
 	});
 
 	pi.registerCommand("pi-theme", {

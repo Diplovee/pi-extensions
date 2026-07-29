@@ -29,6 +29,7 @@ import {
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { aggregateChildResultUsage } from "./usage.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -646,6 +647,7 @@ export default function (pi: ExtensionAPI) {
 								{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` },
 							],
 							details: makeDetails("chain")(results),
+							usage: aggregateChildResultUsage(results),
 							isError: true,
 						};
 					}
@@ -656,6 +658,7 @@ export default function (pi: ExtensionAPI) {
 						{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" },
 					],
 					details: makeDetails("chain")(results),
+					usage: aggregateChildResultUsage(results),
 				};
 			}
 
@@ -752,6 +755,7 @@ export default function (pi: ExtensionAPI) {
 						},
 					],
 					details: makeDetails("parallel")(results),
+					usage: aggregateChildResultUsage(results),
 				};
 			}
 
@@ -774,12 +778,14 @@ export default function (pi: ExtensionAPI) {
 					return {
 						content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${errorMsg}` }],
 						details: makeDetails("single")([result]),
+						usage: aggregateChildResultUsage([result]),
 						isError: true,
 					};
 				}
 				return {
 					content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
 					details: makeDetails("single")([result]),
+					usage: aggregateChildResultUsage([result]),
 				};
 			}
 

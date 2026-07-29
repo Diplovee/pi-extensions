@@ -1,5 +1,6 @@
 import { truncateToWidth } from "@mariozechner/pi-tui";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { accumulateAllEntryUsage } from "./task-summary";
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -14,21 +15,15 @@ export function installFooter(ctx: ExtensionContext): void {
 
 	ctx.ui.setFooter((tui, theme, footerData) => ({
 		render(width: number): string[] {
-			let totalInput = 0;
-			let totalOutput = 0;
-			let totalCacheRead = 0;
-			let totalCacheWrite = 0;
-			let totalCost = 0;
-
-			for (const entry of ctx.sessionManager.getEntries()) {
-				if (entry.type === "message" && entry.message.role === "assistant") {
-					totalInput += entry.message.usage.input;
-					totalOutput += entry.message.usage.output;
-					totalCacheRead += entry.message.usage.cacheRead;
-					totalCacheWrite += entry.message.usage.cacheWrite;
-					totalCost += entry.message.usage.cost.total;
-				}
-			}
+			// The shared accumulator counts each top-level usage record once. In
+			// particular, subagent details are attribution metadata only; their
+			// standard toolResult.usage is the billed session record.
+			const sessionUsage = accumulateAllEntryUsage(ctx.sessionManager.getEntries());
+			const totalInput = sessionUsage.input;
+			const totalOutput = sessionUsage.output;
+			const totalCacheRead = sessionUsage.cacheRead;
+			const totalCacheWrite = sessionUsage.cacheWrite;
+			const totalCost = sessionUsage.cost.total;
 
 			const contextUsage = ctx.getContextUsage();
 			const contextWindow = contextUsage?.contextWindow ?? ctx.model?.contextWindow ?? 0;
